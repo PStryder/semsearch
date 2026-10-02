@@ -1,6 +1,10 @@
 # Operations
 
-## Install
+For the supported production deployment (Windows service, `%ProgramFiles%` /
+`%ProgramData%` layout, installer, upgrade, recovery) see [windows-service.md](windows-service.md).
+This page covers running from a source checkout and the operational concepts shared by both.
+
+## Install (development checkout)
 
 ```
 cd F:\HexyLab\semsearch

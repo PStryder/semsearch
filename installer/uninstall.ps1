@@ -13,8 +13,8 @@ $svc = "SemSearch"
 if (Get-Service $svc -ErrorAction SilentlyContinue) {
   Write-Host "==> stopping and removing service"
   Stop-Service $svc -Force -ErrorAction SilentlyContinue
-  $py = "$InstallDir\venv\Scripts\python.exe"
-  if (Test-Path $py) { & $py -m semsearch.service remove } else { sc.exe delete $svc | Out-Null }
+  $py = (Get-ChildItem "$InstallDir\python\cpython-*\python.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+  if ($py) { & $py -m semsearch.service remove } else { sc.exe delete $svc | Out-Null }
 }
 Write-Host "==> removing binaries $InstallDir"
 Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue

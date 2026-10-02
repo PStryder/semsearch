@@ -14,6 +14,7 @@ Manual run for diagnostics (console, Ctrl-C to stop):
 """
 from __future__ import annotations
 
+import io
 import logging
 import os
 import socket
@@ -82,10 +83,13 @@ class ServiceRuntime:
             log.debug("could not lower priority: %s", e)
 
     def _start_api(self) -> None:
+        _null_std_streams()  # pythonw / Session 0: sys.stdout is None and libraries call .isatty()
         import uvicorn
         from .api import create_app
         app = create_app(self.cfg, self.state)
-        config = uvicorn.Config(app, host=self.cfg.api.host, port=self.cfg.api.port, log_level="warning", access_log=self.cfg.api.log_requests)
+        # log_config=None: keep our logging setup instead of uvicorn's dictConfig (which probes the console)
+        config = uvicorn.Config(app, host=self.cfg.api.host, port=self.cfg.api.port, log_level="warning",
+                                access_log=self.cfg.api.log_requests, log_config=None)
         self.server = uvicorn.Server(config)
         self.server_thread = threading.Thread(target=self.server.run, name="semsearch-api", daemon=True)
         self.server_thread.start()
@@ -133,6 +137,42 @@ class ServiceRuntime:
             except Exception as e:  # noqa: BLE001
                 log.warning("close: %s", e)
         log.info("service stopped in %.1fs", time.time() - t0)
+
+
+class _NullStream(io.TextIOBase):
+    """Discards writes and is not a TTY. (os.devnull on Windows is the NUL character device,
+    whose isatty() is True, which would make libraries emit ANSI colour codes.)"""
+
+    def write(self, s: str) -> int:
+        return len(s)
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
+
+
+def _null_std_streams() -> None:
+    """A windowless process (pythonw.exe, services) has sys.stdout/sys.stderr == None; give
+    them a null sink so any library that writes or probes them keeps working."""
+    for name in ("stdout", "stderr"):
+        if getattr(sys, name, None) is None:
+            setattr(sys, name, _NullStream())
+
+
+def host_interpreter() -> str:
+    """The real interpreter to register as the service binary. A venv's Scripts\\python.exe
+    is a launcher that spawns the base interpreter as a child, which the SCM reports as 'a
+    service process other than the one launched connected'; so always use the base
+    interpreter, windowless variant when present."""
+    base = getattr(sys, "_base_executable", None) or sys.executable
+    w = os.path.join(os.path.dirname(base), "pythonw.exe")
+    return w if os.path.exists(w) else base
 
 
 def _single_instance_or_exit() -> object | None:
@@ -202,13 +242,14 @@ def _make_service_class():
     import win32event
     import win32service
     import win32serviceutil
+    import winerror
 
     class SemSearchService(win32serviceutil.ServiceFramework):
         _svc_name_ = "SemSearch"
         _svc_display_name_ = "Semantic Search (semsearch)"
         _svc_description_ = "Local semantic file search sidecar: maintains an embedding index of configured folders and serves a loopback HTTP API."
-        _exe_name_ = os.path.join(os.path.dirname(sys.executable), "pythonw.exe") if os.path.exists(os.path.join(os.path.dirname(sys.executable), "pythonw.exe")) else sys.executable
-        _exe_args_ = "-m semsearch.service"
+        _exe_name_ = host_interpreter()
+        _exe_args_ = "-s -m semsearch.service"  # -s: never import from a user's site-packages
 
         def __init__(self, args):
             super().__init__(args)
@@ -237,7 +278,7 @@ def _make_service_class():
                 self.mutex = _single_instance_or_exit()
                 if self.mutex is None:
                     servicemanager.LogErrorMsg("semsearch: another instance holds the service mutex; exiting")
-                    self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=win32service.ERROR_SERVICE_ALREADY_RUNNING if hasattr(win32service, "ERROR_SERVICE_ALREADY_RUNNING") else 1056)
+                    self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=winerror.ERROR_SERVICE_ALREADY_RUNNING)
                     return
                 cfg = load_config(str(machine_config_path()) if machine_config_path().is_file() else None)
                 from .logging_setup import setup_logging
@@ -263,7 +304,7 @@ def _make_service_class():
             except ConfigError as e:
                 servicemanager.LogErrorMsg(f"semsearch configuration error: {e}")
                 log.error("configuration error: %s", e)
-                self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=win32service.ERROR_SERVICE_SPECIFIC_ERROR, svcExitCode=2)
+                self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=winerror.ERROR_SERVICE_SPECIFIC_ERROR, svcExitCode=2)
             except Exception:  # noqa: BLE001
                 tb = traceback.format_exc()
                 servicemanager.LogErrorMsg(f"semsearch failed: {tb[-3000:]}")
@@ -273,20 +314,39 @@ def _make_service_class():
                         self.runtime.stop(10)
                 except Exception:  # noqa: BLE001
                     pass
-                self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=win32service.ERROR_SERVICE_SPECIFIC_ERROR, svcExitCode=1)
+                self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=winerror.ERROR_SERVICE_SPECIFIC_ERROR, svcExitCode=1)
 
     return SemSearchService
 
 
+def _service_exists(name: str) -> bool:
+    import pywintypes
+    import win32serviceutil
+    try:
+        win32serviceutil.QueryServiceStatus(name)
+        return True
+    except pywintypes.error as e:
+        if e.winerror == 1060:  # ERROR_SERVICE_DOES_NOT_EXIST
+            return False
+        raise
+
+
 def install(account: str | None, start_type: str = "delayed", description: str | None = None) -> None:
+    """Register (or re-configure, when it already exists) the service. Idempotent."""
     import win32service
     import win32serviceutil
     cls = _make_service_class()
     exe_name = cls._exe_name_
     exe_args = cls._exe_args_
     st = {"auto": win32service.SERVICE_AUTO_START, "delayed": win32service.SERVICE_AUTO_START, "demand": win32service.SERVICE_DEMAND_START}[start_type]
-    win32serviceutil.InstallService(None, cls._svc_name_, cls._svc_display_name_, startType=st, exeName=exe_name, exeArgs=exe_args,
-                                    description=description or cls._svc_description_, userName=account, delayedstart=(start_type == "delayed"))
+    if _service_exists(cls._svc_name_):
+        win32serviceutil.ChangeServiceConfig(None, cls._svc_name_, startType=st, exeName=exe_name, exeArgs=exe_args,
+                                             displayName=cls._svc_display_name_, description=description or cls._svc_description_,
+                                             userName=account, delayedstart=(start_type == "delayed"))
+        print(f"reconfigured existing service {cls._svc_name_}")
+    else:
+        win32serviceutil.InstallService(None, cls._svc_name_, cls._svc_display_name_, startType=st, exeName=exe_name, exeArgs=exe_args,
+                                        description=description or cls._svc_description_, userName=account, delayedstart=(start_type == "delayed"))
     try:
         import win32evtlogutil
         import servicemanager
@@ -299,6 +359,9 @@ def install(account: str | None, start_type: str = "delayed", description: str |
 def remove() -> None:
     import win32serviceutil
     cls = _make_service_class()
+    if not _service_exists(cls._svc_name_):
+        print(f"service {cls._svc_name_} is not installed; nothing to remove")
+        return
     try:
         win32serviceutil.StopService(cls._svc_name_)
     except Exception:  # noqa: BLE001
