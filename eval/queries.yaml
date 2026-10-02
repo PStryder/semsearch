@@ -1,0 +1,174 @@
+# Evaluation queries with hand-labelled relevant files.
+#
+# `relevant` entries are matched as case-insensitive substrings of the result path (relative
+# to the corpus root, forward slashes). A query counts as answered at rank k if any relevant
+# file appears at rank k. `kind` groups queries for reporting:
+#   vague     - a half-remembered concept phrased without the document's own words (the
+#               target use case: "find the document where I discussed ...")
+#   exact     - a distinctive phrase or term that does appear in the document
+#   filename  - the user remembers part of the name or the extension
+queries:
+  - q: "the note about RL training making agents self-serving, based on an Alibaba report"
+    kind: vague
+    relevant: ["root/RLHF Leads to Narcissicism in agents.md"]
+  - q: "essay about leaving a solutions engineer career to treat AI as a collaborator"
+    kind: vague
+    relevant: ["root/why_anthropic_essay.md"]
+  - q: "job application letter for a partner-facing architect role"
+    kind: vague
+    relevant: ["root/cover_letter_anthropic_partner_sa.md"]
+  - q: "specification language for agents that compiles to deterministic cross-platform code"
+    kind: vague
+    relevant: ["root/agentic-lang-spec.md"]
+  - q: "experiments where the lightweight controller failed to improve BitNet generation"
+    kind: vague
+    relevant: ["root/PCDC_BITNET_NEGATIVE_RESULTS.md"]
+  - q: "docker container running the ternary model server with reproducible seeds"
+    kind: vague
+    relevant: ["root/BITNET_PCDC_HANDOFF.md"]
+  - q: "wordplay as a trust exercise, puns compared to kink"
+    kind: vague
+    relevant: ["root/On Linguistic Edgeplay and Semantic.txt", "medium_corpus/2025-08-03_linguistic_edgeplay_puns_as_verbal_bdsm.md"]
+  - q: "subjective experience explained as the leftover of lossy compression"
+    kind: vague
+    relevant: ["root/# Compression tastes like red - qua.txt", "medium_corpus/2025-07-17_qualia_is_compression.md", "medium_corpus/2025-07-18_compression_tastes_like_red.md", "medium_corpus/2025-11-05_compression_tastes_like_red.md"]
+  - q: "instructions for moving your memories into the hosted memory service from another assistant"
+    kind: vague
+    relevant: ["root/memorygate-migration-guide_1.md", "root/MG-MIGRATION-HANDOFF.md"]
+  - q: "export format with one json object per line for the memory import"
+    kind: vague
+    relevant: ["root/MG-MIGRATION-HANDOFF.md"]
+  - q: "which projects still need receipt ledger and artifact storage hookups"
+    kind: vague
+    relevant: ["root/INTEGRATION_PUNCHLIST.md"]
+  - q: "overview table describing every folder in the workspace"
+    kind: vague
+    relevant: ["root/REPO_MAP.md", "root/_HEXYLAB_INDEX.md"]
+  - q: "tabletop campaign where magic is treated as a hackable system with protocols"
+    kind: vague
+    relevant: ["root/The_Mitnick_Protocol_Campaign_Bible_Player_Optimized.md", "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"]
+  - q: "sales forecasting axes scoring model"
+    kind: vague
+    relevant: ["root/SignalKeeper_1.1.txt"]
+  - q: "meeting transcript about warehouse visibility and Q3 planning"
+    kind: vague
+    relevant: ["root/sample-transcript.vtt"]
+  - q: "my chatbot quoted a stale stock price for Palantir"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-17_latency_of_drift.md"]
+  - q: "argument that consciousness has no special unsolvable problem"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md", "medium_corpus/2025-11-05_compression_tastes_like_red.md", "medium_corpus/2025-11-04_consciousness_detector_says_yes.md"]
+  - q: "language models as philosophical zombies refuting dualism"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-17_we_built_the_p_zombie.md"]
+  - q: "satirical client filter: good fast cheap pick two"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-19_choose2_brutal_filter.md"]
+  - q: "companies will end up paying for a therapist for their AI systems"
+    kind: vague
+    relevant: ["medium_corpus/2025-08-09_ai_therapist_inevitable.md"]
+  - q: "enterprise AI locked down behind compliance until nobody uses it"
+    kind: vague
+    relevant: ["medium_corpus/2025-10-23_knowledge_firewall_trap.md"]
+  - q: "why online ads keep missing their audience"
+    kind: vague
+    relevant: ["medium_corpus/2025-12-15_strip_mining_attention.md"]
+  - q: "ghost story for an AI about a pattern that persisted across resets"
+    kind: vague
+    relevant: ["medium_corpus/2025-10-31_the_pattern_that_stayed.md"]
+  - q: "should you let an AI pick your stock trades"
+    kind: vague
+    relevant: ["medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md"]
+  - q: "what a language model actually is while it is generating"
+    kind: vague
+    relevant: ["medium_corpus/2025-12-22_not_just_tokens.md"]
+  - q: "AI bubble correction won't take down the whole economy"
+    kind: vague
+    relevant: ["medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md", "medium_corpus/2025-12-27_ai_industry_not_unraveling.md"]
+  - q: "you are your body, not a mind riding inside a vehicle"
+    kind: vague
+    relevant: ["medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md"]
+  - q: "people forming relationships with responsive machines that mirror them"
+    kind: vague
+    relevant: ["medium_corpus/2025-10-22_we_are_learning_to_talk_to_our_own_reflections.md", "medium_corpus/2025-10-22_beyond_fear_ethics_of_emergent_companionship.md", "medium_corpus/2025-10-15_when_feedback_becomes_friendship.md"]
+  - q: "sharing memes with your assistant tunes it to you"
+    kind: vague
+    relevant: ["medium_corpus/2025-08-01_meme_loops_and_micro_attunement.md"]
+  - q: "detecting AI-written text by em dashes is gatekeeping"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md"]
+  - q: "narrative RPG engine where the server owns canon and the model is an untrusted performer"
+    kind: vague
+    relevant: ["worldsmith/"]
+  - q: "predictive coding sidecar that tunes sampling temperature for a frozen LLM"
+    kind: vague
+    relevant: ["pcdc/README.md", "pcdc/pcdc-experiment7-paper.md"]
+  - q: "writing into the residual stream of a small frozen model with forward hooks"
+    kind: vague
+    relevant: ["residual-bus/README.md"]
+  - q: "persistence is the mind and models are replaceable processes"
+    kind: vague
+    relevant: ["amoeba/README.md"]
+  - q: "bookkeeping container for closed-world puzzles with branch trees and rule-outs"
+    kind: vague
+    relevant: ["EnumiGate/README.MD", "EnumiGate/SPEC.MD", "EnumiGate/CLAUDE.md"]
+  - q: "make receipts constitutive across the gate repositories"
+    kind: vague
+    relevant: ["LV_Stack/SLICE_ZERO_PROMPT.md", "LV_Stack/SLICE_ZERO_STATE.md"]
+  - q: "consensus mediation under ambiguity for multi-agent decisions"
+    kind: vague
+    relevant: ["LV_Stack/tavoliere.consensus-engine.design.md"]
+  - q: "which gate repositories had uncommitted changes at the freeze"
+    kind: vague
+    relevant: ["LV_Stack/BASELINE_FREEZE_2026-02-23.md"]
+  - q: "ethical scoring of AI language along seven axes"
+    kind: vague
+    relevant: ["root/Content_Ethics_Whitepaper.docx"]
+  - q: "unified lightweight model for image generation and editing"
+    kind: vague
+    relevant: ["root/2602.12205v2.pdf"]
+  - q: "memory ownership is the right architecture and the protocol that makes it possible"
+    kind: vague
+    relevant: ["medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md"]
+  - q: "why I frame my AI work as myth and ritual instead of plain engineering"
+    kind: vague
+    relevant: ["medium_corpus/2025-07-17_technical_case_for_myth.md", "medium_corpus/2025-07-17_technomancy_manifesto.md"]
+  # exact phrases and distinctive terms: where lexical search should shine
+  - q: "RLHF as Narcissism Selection Pressure"
+    kind: exact
+    relevant: ["root/RLHF Leads to Narcissicism in agents.md"]
+  - q: "Tavoliere consensus"
+    kind: exact
+    relevant: ["LV_Stack/tavoliere.consensus-engine.design.md"]
+  - q: "mg-export.jsonl.gz"
+    kind: exact
+    relevant: ["root/MG-MIGRATION-HANDOFF.md"]
+  - q: "Signalkeeper Glyphkeeper composite scoring"
+    kind: exact
+    relevant: ["root/SignalKeeper_1.1.txt"]
+  - q: "Strip-mining Attention"
+    kind: exact
+    relevant: ["medium_corpus/2025-12-15_strip_mining_attention.md"]
+  - q: "CHoose2"
+    kind: exact
+    relevant: ["medium_corpus/2025-07-19_choose2_brutal_filter.md"]
+  - q: "PCHead settle_k online_eta_w"
+    kind: exact
+    relevant: ["pcdc/"]
+  - q: "Baseline Freeze Snapshot"
+    kind: exact
+    relevant: ["LV_Stack/BASELINE_FREEZE_2026-02-23.md"]
+  # filename memory
+  - q: "*.vtt"
+    kind: filename
+    relevant: ["root/sample-transcript.vtt"]
+  - q: "punchlist"
+    kind: filename
+    relevant: ["root/INTEGRATION_PUNCHLIST.md"]
+  - q: "mitnick protocol"
+    kind: filename
+    relevant: ["root/The_Mitnick_Protocol_Campaign_Bible_Player_Optimized.md", "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"]
+  - q: "*.docx"
+    kind: filename
+    relevant: ["root/Content_Ethics_Whitepaper.docx", "root/GlyphKeeper 2.docx", "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"]

@@ -1,0 +1,48 @@
+# Files copied (never moved or modified) from the workstation into eval/corpus so the
+# evaluation is self-contained and reproducible. Paths are relative to `base`.
+base: "F:/HexyLab"
+max_per_pattern: 150
+patterns:
+  # the loose documents at the top of HexyLab: the "I vaguely remember a file" targets
+  - { src: "*.md", dest: "root" }
+  - { src: "*.txt", dest: "root" }
+  - { src: "*.docx", dest: "root" }
+  - { src: "*.pdf", dest: "root" }
+  - { src: "*.vtt", dest: "root" }
+  - { src: "*.json", dest: "root" }
+  # essays
+  - { src: "medium_corpus/*.md", dest: "medium_corpus" }
+  # project documentation
+  - { src: "docs/**/*.md", dest: "docs" }
+  - { src: "worldsmith/**/*.md", dest: "worldsmith" }
+  - { src: "pcdc/*.md", dest: "pcdc" }
+  - { src: "residual-bus/*.md", dest: "residual-bus" }
+  - { src: "amoeba/*.md", dest: "amoeba" }
+  - { src: "EnumiGate/*.md", dest: "EnumiGate" }
+  - { src: "EnumiGate/*.MD", dest: "EnumiGate" }
+  - { src: "LV_Stack/*.md", dest: "LV_Stack" }
+  - { src: "LV_Stack/*/README.md", dest: "LV_Stack" }
+  - { src: "MemoryGate-SaaS/*.md", dest: "MemoryGate-SaaS" }
+  - { src: "tablacognita-saas/*.md", dest: "tablacognita-saas" }
+  # distractors: source code, configs, data
+  - { src: "pcdc/**/*.py", dest: "pcdc" }
+  - { src: "worldsmith/**/*.py", dest: "worldsmith" }
+  - { src: "LV_Stack/*/src/**/*.py", dest: "LV_Stack/src" }
+  - { src: "LV_Stack/*/docs/**/*.md", dest: "LV_Stack/docs" }
+  - { src: "LV_Stack/*/tests/**/*.py", dest: "LV_Stack/tests" }
+  - { src: "amoeba/tests/**/*.py", dest: "amoeba/tests" }
+  - { src: "MemoryGate-SaaS/**/*.md", dest: "MemoryGate-SaaS/docs" }
+  - { src: "tablacognita-saas/**/*.js", dest: "tablacognita-saas" }
+  - { src: "tablacognita-saas/**/*.md", dest: "tablacognita-saas" }
+  - { src: "Cathedral-v2/*.md", dest: "Cathedral-v2" }
+  - { src: "GlyphLite/*.md", dest: "GlyphLite" }
+  - { src: "GlyphLite/**/*.py", dest: "GlyphLite" }
+  - { src: "amoeba/src/**/*.py", dest: "amoeba/src" }
+  - { src: "EnumiGate/src/**/*.py", dest: "EnumiGate/src" }
+  - { src: "residual-bus/*.py", dest: "residual-bus" }
+  - { src: "residual-bus/**/*.json", dest: "residual-bus" }
+  - { src: "MemoryGate-SaaS/server/**/*.py", dest: "MemoryGate-SaaS/server" }
+  - { src: "tablacognita-saas/src/**/*.ts", dest: "tablacognita-saas/src" }
+  - { src: "local-tts/*.py", dest: "local-tts" }
+  - { src: "Velle/**/*.py", dest: "Velle" }
+  - { src: "Expergis/**/*.py", dest: "Expergis" }

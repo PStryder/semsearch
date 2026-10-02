@@ -1,0 +1,49 @@
+[project]
+name = "semsearch"
+version = "0.1.0"
+description = "Windows semantic-search sidecar: augments Windows Search with local embeddings and hybrid retrieval"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.7",
+    "comtypes>=1.4",
+    "pywin32>=306; sys_platform == 'win32'",
+    "sqlite-vec>=0.1.6",
+    "numpy>=1.26",
+    "tokenizers>=0.19",
+    "huggingface-hub>=0.23",
+    "pypdf>=4.2",
+    "python-docx>=1.1",
+    "python-pptx>=0.6.23",
+    "openpyxl>=3.1",
+    "pyyaml>=6.0",
+    "httpx>=0.27",
+]
+
+# Exactly one ONNX Runtime build can be installed (they all provide the `onnxruntime` module):
+#   cpu  - CPU only
+#   dml  - DirectML: any DirectX 12 adapter, including integrated GPUs (Windows). Also runs on CPU.
+#   gpu  - CUDA (needs CUDA 12 + cuDNN 9). Also runs on CPU.
+[project.optional-dependencies]
+cpu = ["onnxruntime>=1.18"]
+dml = ["onnxruntime-directml>=1.18"]
+gpu = ["onnxruntime-gpu>=1.18"]
+st = ["sentence-transformers>=3.0"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+semsearch = "semsearch.cli:main"
+semsearch-serve = "semsearch.api:serve"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/semsearch"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

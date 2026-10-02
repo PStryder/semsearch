@@ -1,0 +1,4311 @@
+{
+ "model": "onnx:BAAI/bge-small-en-v1.5:5c38ec7c405ec4b44b94cc5a9bb96e735b38267a:384:cls",
+ "device": "cpu",
+ "corpus": "F:\\HexyLab\\semsearch\\eval\\corpus",
+ "fusion": "convex",
+ "weights": {
+  "semantic": 0.6,
+  "lexical": 0.4
+ },
+ "windows_search_inventory": true,
+ "started": "2026-10-02T14:08:37",
+ "indexing": {
+  "seconds": 578.2,
+  "jobs": 975,
+  "documents": 975,
+  "chunks": 8772,
+  "docs_per_s": 1.66,
+  "chunks_per_s": 14.02,
+  "extract_ms_total": 11857,
+  "embed_ms_total": 560586,
+  "by_status": {
+   "empty": 15,
+   "ok": 960
+  },
+  "by_method": {
+   "ifilter:LoadIFilter": 3,
+   "pypdf": 3,
+   "text": 969
+  },
+  "failed": 0,
+  "source": {
+   "f:\\hexylab\\semsearch\\eval\\corpus": "windows_search+fs"
+  }
+ },
+ "summary": {
+  "literal": {
+   "exact": {
+    "n": 8,
+    "top1": 1.0,
+    "recall5": 1.5,
+    "mrr": 1.0,
+    "p50_ms": 15.0,
+    "p95_ms": 32.9
+   },
+   "filename": {
+    "n": 4,
+    "top1": 0.75,
+    "recall5": 0.75,
+    "mrr": 0.75,
+    "p50_ms": 13.1,
+    "p95_ms": 22.5
+   },
+   "vague": {
+    "n": 42,
+    "top1": 0.7619047619047619,
+    "recall5": 0.8571428571428571,
+    "mrr": 0.8253968253968254,
+    "p50_ms": 24.7,
+    "p95_ms": 55.5
+   },
+   "all": {
+    "n": 54,
+    "top1": 0.7962962962962963,
+    "recall5": 0.9444444444444444,
+    "mrr": 0.845679012345679,
+    "p50_ms": 23.4,
+    "p95_ms": 55.5
+   }
+  },
+  "semantic": {
+   "exact": {
+    "n": 8,
+    "top1": 0.875,
+    "recall5": 1.5,
+    "mrr": 0.9,
+    "p50_ms": 6.5,
+    "p95_ms": 7.0
+   },
+   "filename": {
+    "n": 4,
+    "top1": 0.25,
+    "recall5": 0.25,
+    "mrr": 0.25,
+    "p50_ms": 5.2,
+    "p95_ms": 5.4
+   },
+   "vague": {
+    "n": 42,
+    "top1": 0.8571428571428571,
+    "recall5": 0.9384920634920635,
+    "mrr": 0.8740362811791383,
+    "p50_ms": 7.0,
+    "p95_ms": 7.7
+   },
+   "all": {
+    "n": 54,
+    "top1": 0.8148148148148148,
+    "recall5": 0.970679012345679,
+    "mrr": 0.8316578483245151,
+    "p50_ms": 6.8,
+    "p95_ms": 7.7
+   }
+  },
+  "hybrid": {
+   "exact": {
+    "n": 8,
+    "top1": 1.0,
+    "recall5": 1.5,
+    "mrr": 1.0,
+    "p50_ms": 23.3,
+    "p95_ms": 42.0
+   },
+   "filename": {
+    "n": 4,
+    "top1": 0.5,
+    "recall5": 0.5,
+    "mrr": 0.5277777777777778,
+    "p50_ms": 19.7,
+    "p95_ms": 30.0
+   },
+   "vague": {
+    "n": 42,
+    "top1": 0.8809523809523809,
+    "recall5": 0.9761904761904762,
+    "mrr": 0.9017857142857143,
+    "p50_ms": 33.3,
+    "p95_ms": 64.1
+   },
+   "all": {
+    "n": 54,
+    "top1": 0.8703703703703703,
+    "recall5": 1.0185185185185186,
+    "mrr": 0.8886316872427984,
+    "p50_ms": 32.3,
+    "p95_ms": 64.1
+   }
+  }
+ },
+ "per_query": [
+  {
+   "q": "the note about RL training making agents self-serving, based on an Alibaba report",
+   "kind": "vague",
+   "relevant": [
+    "root/RLHF Leads to Narcissicism in agents.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 33.4,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/2602.12205v2.pdf",
+       "lexical",
+       0.5248
+      ],
+      [
+       "amoeba/src/amoeba/arbiter.py",
+       "lexical",
+       0.4171
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 8.0,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "semantic",
+       0.7209
+      ],
+      [
+       "amoeba/src/amoeba/scopes.py",
+       "semantic",
+       0.6581
+      ],
+      [
+       "worldsmith/src/worldsmith/vocab.py",
+       "semantic",
+       0.6437
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 40.2,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/2602.12205v2.pdf",
+       "both",
+       0.3654
+      ],
+      [
+       "amoeba/src/amoeba/scopes.py",
+       "both",
+       0.3259
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "essay about leaving a solutions engineer career to treat AI as a collaborator",
+   "kind": "vague",
+   "relevant": [
+    "root/why_anthropic_essay.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.3,
+     "top": [
+      [
+       "root/why_anthropic_essay.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "lexical",
+       0.5252
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "lexical",
+       0.4961
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "root/why_anthropic_essay.md",
+       "semantic",
+       0.7442
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "semantic",
+       0.734
+      ],
+      [
+       "medium_corpus/2025-07-19_we_are_all_ai_automation_engineers.md",
+       "semantic",
+       0.7212
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 33.4,
+     "top": [
+      [
+       "root/why_anthropic_essay.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "both",
+       0.7366
+      ],
+      [
+       "medium_corpus/2025-07-19_we_are_all_ai_automation_engineers.md",
+       "both",
+       0.565
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "job application letter for a partner-facing architect role",
+   "kind": "vague",
+   "relevant": [
+    "root/cover_letter_anthropic_partner_sa.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 26.7,
+     "top": [
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/src/cognigate/src/cognigate/metrics.py",
+       "lexical",
+       0.7415
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/cognigate/docs/diagrams/lease-to-receipt-flow.md",
+       "lexical",
+       0.6702
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "semantic",
+       0.782
+      ],
+      [
+       "root/why_anthropic_essay.md",
+       "semantic",
+       0.669
+      ],
+      [
+       "amoeba/tests/test_live_stack.py",
+       "semantic",
+       0.6622
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 37.4,
+     "top": [
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "both",
+       1.0
+      ],
+      [
+       "lv_stack/src/cognigate/src/cognigate/metrics.py",
+       "lexical",
+       0.2687
+      ],
+      [
+       "root/why_anthropic_essay.md",
+       "semantic",
+       0.2439
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "specification language for agents that compiles to deterministic cross-platform code",
+   "kind": "vague",
+   "relevant": [
+    "root/agentic-lang-spec.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 1.0,
+     "mrr": 0.5,
+     "latency_ms": 26.6,
+     "top": [
+      [
+       "lv_stack/docs/legivellum/docs/canonical/vellum.spec.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/agentic-lang-spec.md",
+       "lexical",
+       0.9924
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/vellum.problemata.bridge.md",
+       "lexical",
+       0.4841
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.6,
+     "top": [
+      [
+       "root/agentic-lang-spec.md",
+       "semantic",
+       0.8728
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/vellum.spec.md",
+       "semantic",
+       0.7822
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "semantic",
+       0.7687
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 33.3,
+     "top": [
+      [
+       "root/agentic-lang-spec.md",
+       "both",
+       0.9964
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/vellum.spec.md",
+       "both",
+       0.7332
+      ],
+      [
+       "worldsmith/spec/08-authoring-mcp.md",
+       "both",
+       0.3898
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "experiments where the lightweight controller failed to improve BitNet generation",
+   "kind": "vague",
+   "relevant": [
+    "root/PCDC_BITNET_NEGATIVE_RESULTS.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 26.6,
+     "top": [
+      [
+       "root/pcdc_bitnet_negative_results.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/bitnet_pcdc_handoff.md",
+       "lexical",
+       0.6513
+      ],
+      [
+       "root/_hexylab_index.md",
+       "lexical",
+       0.6184
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "root/pcdc_bitnet_negative_results.md",
+       "semantic",
+       0.8587
+      ],
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "semantic",
+       0.7503
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.7438
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 36.4,
+     "top": [
+      [
+       "root/pcdc_bitnet_negative_results.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/bitnet_pcdc_handoff.md",
+       "both",
+       0.4677
+      ],
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "both",
+       0.4281
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "docker container running the ternary model server with reproducible seeds",
+   "kind": "vague",
+   "relevant": [
+    "root/BITNET_PCDC_HANDOFF.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 1.0,
+     "mrr": 0.5,
+     "latency_ms": 24.6,
+     "top": [
+      [
+       "tablacognita-saas/readme.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/bitnet_pcdc_handoff.md",
+       "lexical",
+       0.9845
+      ],
+      [
+       "lv_stack/slice_zero_state.md",
+       "lexical",
+       0.7027
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 7.8,
+     "top": [
+      [
+       "tablacognita-saas/readme.md",
+       "semantic",
+       0.73
+      ],
+      [
+       "lv_stack/slice_zero_state.md",
+       "semantic",
+       0.7184
+      ],
+      [
+       "residual-bus/model.py",
+       "semantic",
+       0.7169
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": 4,
+     "recall5": 1.0,
+     "mrr": 0.25,
+     "latency_ms": 34.3,
+     "top": [
+      [
+       "tablacognita-saas/readme.md",
+       "both",
+       1.0
+      ],
+      [
+       "lv_stack/slice_zero_state.md",
+       "both",
+       0.749
+      ],
+      [
+       "residual-bus/model.py",
+       "both",
+       0.6753
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "wordplay as a trust exercise, puns compared to kink",
+   "kind": "vague",
+   "relevant": [
+    "root/On Linguistic Edgeplay and Semantic.txt",
+    "medium_corpus/2025-08-03_linguistic_edgeplay_puns_as_verbal_bdsm.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 19.4,
+     "top": [
+      [
+       "root/on linguistic edgeplay and semantic.txt",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-08-03_linguistic_edgeplay_puns_as_verbal_bdsm.md",
+       "lexical",
+       0.9473
+      ],
+      [
+       "worldsmith/tests/test_conditions.py",
+       "lexical",
+       0.4698
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.5,
+     "top": [
+      [
+       "medium_corpus/2025-08-03_linguistic_edgeplay_puns_as_verbal_bdsm.md",
+       "semantic",
+       0.8391
+      ],
+      [
+       "root/on linguistic edgeplay and semantic.txt",
+       "semantic",
+       0.8193
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.7215
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 28.1,
+     "top": [
+      [
+       "medium_corpus/2025-08-03_linguistic_edgeplay_puns_as_verbal_bdsm.md",
+       "both",
+       0.9743
+      ],
+      [
+       "root/on linguistic edgeplay and semantic.txt",
+       "both",
+       0.9463
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "both",
+       0.4184
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "subjective experience explained as the leftover of lossy compression",
+   "kind": "vague",
+   "relevant": [
+    "root/# Compression tastes like red - qua.txt",
+    "medium_corpus/2025-07-17_qualia_is_compression.md",
+    "medium_corpus/2025-07-18_compression_tastes_like_red.md",
+    "medium_corpus/2025-11-05_compression_tastes_like_red.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 3,
+     "recall5": 0.5,
+     "mrr": 0.3333333333333333,
+     "latency_ms": 26.2,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "lexical",
+       0.9986
+      ],
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "lexical",
+       0.9969
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.75,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.789
+      ],
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "semantic",
+       0.7833
+      ],
+      [
+       "medium_corpus/2025-07-18_when_compression_breaks.md",
+       "semantic",
+       0.772
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 34.3,
+     "top": [
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "both",
+       0.9778
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "both",
+       0.8733
+      ],
+      [
+       "medium_corpus/2025-07-20_the_sacred_art_of_becoming.md",
+       "both",
+       0.6143
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "instructions for moving your memories into the hosted memory service from another assistant",
+   "kind": "vague",
+   "relevant": [
+    "root/memorygate-migration-guide_1.md",
+    "root/MG-MIGRATION-HANDOFF.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 37.1,
+     "top": [
+      [
+       "root/memorygate-migration-guide_1.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "memorygate-saas/readme.md",
+       "lexical",
+       0.9714
+      ],
+      [
+       "memorygate-saas/docs/readme.md",
+       "lexical",
+       0.9714
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 7.5,
+     "top": [
+      [
+       "root/memorygate-migration-guide_1.md",
+       "semantic",
+       0.7912
+      ],
+      [
+       "memorygate-saas/server/memory_supersession.py",
+       "semantic",
+       0.7654
+      ],
+      [
+       "root/bios.md",
+       "semantic",
+       0.7613
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 49.6,
+     "top": [
+      [
+       "root/memorygate-migration-guide_1.md",
+       "both",
+       1.0
+      ],
+      [
+       "memorygate-saas/readme.md",
+       "both",
+       0.7793
+      ],
+      [
+       "memorygate-saas/docs/readme.md",
+       "both",
+       0.7793
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "export format with one json object per line for the memory import",
+   "kind": "vague",
+   "relevant": [
+    "root/MG-MIGRATION-HANDOFF.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 27.2,
+     "top": [
+      [
+       "root/mg-migration-handoff.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/mcp.metrics.exporter.md",
+       "lexical",
+       0.9631
+      ],
+      [
+       "amoeba/src/amoeba/rpc.py",
+       "lexical",
+       0.8235
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 1.0,
+     "mrr": 0.5,
+     "latency_ms": 7.2,
+     "top": [
+      [
+       "medium_corpus/building_memory_across_reset.md",
+       "semantic",
+       0.7235
+      ],
+      [
+       "root/mg-migration-handoff.md",
+       "semantic",
+       0.7227
+      ],
+      [
+       "memorygate-saas/server/dashboard/routes/memories.py",
+       "semantic",
+       0.7203
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 34.4,
+     "top": [
+      [
+       "root/mg-migration-handoff.md",
+       "both",
+       0.994
+      ],
+      [
+       "memorygate-saas/server/dashboard/routes/memories.py",
+       "both",
+       0.7111
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/mcp.metrics.exporter.md",
+       "both",
+       0.6519
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "which projects still need receipt ledger and artifact storage hookups",
+   "kind": "vague",
+   "relevant": [
+    "root/INTEGRATION_PUNCHLIST.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 27.7,
+     "top": [
+      [
+       "root/integration_punchlist.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/src/interview/src/interview/sources.py",
+       "lexical",
+       0.7762
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/interview/readme.md",
+       "lexical",
+       0.7537
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": 15,
+     "recall5": 0.0,
+     "mrr": 0.06666666666666667,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "lv_stack/legivellum/readme.md",
+       "semantic",
+       0.7622
+      ],
+      [
+       "lv_stack/_cross_repo_analysis.md",
+       "semantic",
+       0.7484
+      ],
+      [
+       "lv_stack/slice_zero_prompt.md",
+       "semantic",
+       0.748
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 1.0,
+     "mrr": 0.5,
+     "latency_ms": 37.0,
+     "top": [
+      [
+       "lv_stack/legivellum/readme.md",
+       "both",
+       0.8185
+      ],
+      [
+       "root/integration_punchlist.md",
+       "both",
+       0.7909
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/receipt.rules.md",
+       "both",
+       0.6532
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "overview table describing every folder in the workspace",
+   "kind": "vague",
+   "relevant": [
+    "root/REPO_MAP.md",
+    "root/_HEXYLAB_INDEX.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 22.6,
+     "top": [
+      [
+       "enumigate/src/enumigate/storage.py",
+       "lexical",
+       1.0
+      ],
+      [
+       "worldsmith/spec/08-authoring-mcp.md",
+       "lexical",
+       0.9029
+      ],
+      [
+       "lv_stack/docs/memorygate/docs/index.md",
+       "lexical",
+       0.9018
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": 7,
+     "recall5": 0.0,
+     "mrr": 0.14285714285714285,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "enumigate/src/enumigate/engine.py",
+       "semantic",
+       0.7577
+      ],
+      [
+       "enumigate/src/enumigate/storage.py",
+       "semantic",
+       0.6918
+      ],
+      [
+       "enumigate/src/enumigate/server/mcp.py",
+       "semantic",
+       0.682
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": 8,
+     "recall5": 0.0,
+     "mrr": 0.125,
+     "latency_ms": 32.6,
+     "top": [
+      [
+       "enumigate/src/enumigate/engine.py",
+       "both",
+       0.8552
+      ],
+      [
+       "enumigate/src/enumigate/storage.py",
+       "both",
+       0.7173
+      ],
+      [
+       "lv_stack/docs/memorygate/docs/index.md",
+       "both",
+       0.6073
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "tabletop campaign where magic is treated as a hackable system with protocols",
+   "kind": "vague",
+   "relevant": [
+    "root/The_Mitnick_Protocol_Campaign_Bible_Player_Optimized.md",
+    "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.5,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "lexical",
+       0.8856
+      ],
+      [
+       "worldsmith/spec/00-platform-spec.md",
+       "lexical",
+       0.6277
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.4,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "semantic",
+       0.7514
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "semantic",
+       0.7403
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.6879
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 30.4,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "both",
+       0.9009
+      ],
+      [
+       "worldsmith/spec/00-platform-spec.md",
+       "both",
+       0.5406
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "sales forecasting axes scoring model",
+   "kind": "vague",
+   "relevant": [
+    "root/SignalKeeper_1.1.txt"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 16.8,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.3,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "semantic",
+       0.7458
+      ],
+      [
+       "pcdc/scripts/exp7_parameter_modulation.py",
+       "semantic",
+       0.6621
+      ],
+      [
+       "pcdc/scripts/analyse_session.py",
+       "semantic",
+       0.658
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.1,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "both",
+       1.0
+      ],
+      [
+       "pcdc/scripts/exp7_parameter_modulation.py",
+       "semantic",
+       0.2686
+      ],
+      [
+       "pcdc/scripts/analyse_session.py",
+       "semantic",
+       0.2525
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "meeting transcript about warehouse visibility and Q3 planning",
+   "kind": "vague",
+   "relevant": [
+    "root/sample-transcript.vtt"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 19.8,
+     "top": [
+      [
+       "worldsmith/tests/test_idempotency.py",
+       "lexical",
+       1.0
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "lexical",
+       0.9415
+      ],
+      [
+       "worldsmith/spec/05-canonical-vocabulary.md",
+       "lexical",
+       0.7931
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 6.6,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "semantic",
+       0.6833
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/receiptgate/mem_test_spec.md",
+       "semantic",
+       0.6794
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/legacy/receipt_protocol.md",
+       "semantic",
+       0.6753
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 26.9,
+     "top": [
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "both",
+       0.7585
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "both",
+       0.6604
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/legacy/receipt_protocol.md",
+       "both",
+       0.6443
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "my chatbot quoted a stale stock price for Palantir",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-17_latency_of_drift.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 21.6,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "lexical",
+       0.7051
+      ],
+      [
+       "memorygate-saas/docs/deployment/db/readme.md",
+       "lexical",
+       0.6189
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.1,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "semantic",
+       0.7342
+      ],
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "semantic",
+       0.6927
+      ],
+      [
+       "residual-bus/results/phase3n/null_summary.json",
+       "semantic",
+       0.6827
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 30.7,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "both",
+       0.6549
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "both",
+       0.3768
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "argument that consciousness has no special unsolvable problem",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+    "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+    "medium_corpus/2025-11-04_consciousness_detector_says_yes.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 0.6666666666666666,
+     "mrr": 0.5,
+     "latency_ms": 23.9,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "lexical",
+       0.8873
+      ],
+      [
+       "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+       "lexical",
+       0.8293
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.6666666666666666,
+     "mrr": 1.0,
+     "latency_ms": 6.9,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+       "semantic",
+       0.7816
+      ],
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "semantic",
+       0.7111
+      ],
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "semantic",
+       0.7012
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 32.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+       "both",
+       0.9064
+      ],
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "both",
+       0.8035
+      ],
+      [
+       "medium_corpus/2025-11-05_compression_tastes_like_red.md",
+       "both",
+       0.7141
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "language models as philosophical zombies refuting dualism",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-17_we_built_the_p_zombie.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 20.7,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.1,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "semantic",
+       0.842
+      ],
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "semantic",
+       0.7602
+      ],
+      [
+       "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+       "semantic",
+       0.7581
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 29.1,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_we_built_the_p_zombie.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "semantic",
+       0.3583
+      ],
+      [
+       "medium_corpus/2025-07-17_no_hard_problem_of_consciousness.md",
+       "semantic",
+       0.3519
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "satirical client filter: good fast cheap pick two",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-19_choose2_brutal_filter.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 21.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-19_choose2_brutal_filter.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "lexical",
+       0.407
+      ],
+      [
+       "memorygate-saas/docs/docs/app-store-requirements.md",
+       "lexical",
+       0.3884
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "medium_corpus/2025-07-19_choose2_brutal_filter.md",
+       "semantic",
+       0.742
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.6378
+      ],
+      [
+       "worldsmith/spec/readme.md",
+       "semantic",
+       0.634
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 28.6,
+     "top": [
+      [
+       "medium_corpus/2025-07-19_choose2_brutal_filter.md",
+       "both",
+       1.0
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "both",
+       0.3102
+      ],
+      [
+       "worldsmith/spec/readme.md",
+       "both",
+       0.2668
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "companies will end up paying for a therapist for their AI systems",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-08-09_ai_therapist_inevitable.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.7,
+     "top": [
+      [
+       "medium_corpus/2025-08-09_ai_therapist_inevitable.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-19_we_are_all_ai_automation_engineers.md",
+       "lexical",
+       0.8457
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "lexical",
+       0.789
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.6,
+     "top": [
+      [
+       "medium_corpus/2025-08-09_ai_therapist_inevitable.md",
+       "semantic",
+       0.782
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "semantic",
+       0.6641
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "semantic",
+       0.6601
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 32.3,
+     "top": [
+      [
+       "medium_corpus/2025-08-09_ai_therapist_inevitable.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-19_we_are_all_ai_automation_engineers.md",
+       "both",
+       0.5846
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "both",
+       0.5791
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "enterprise AI locked down behind compliance until nobody uses it",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-10-23_knowledge_firewall_trap.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.8,
+     "top": [
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/corpovellum/readme.md",
+       "lexical",
+       0.9772
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/asyncgate/docs/deployment_comparison.md",
+       "lexical",
+       0.9677
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.1,
+     "top": [
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "semantic",
+       0.7446
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.738
+      ],
+      [
+       "root/cover_letter_anthropic_partner_sa.md",
+       "semantic",
+       0.6913
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 33.9,
+     "top": [
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "both",
+       0.8361
+      ],
+      [
+       "memorygate-saas/docs/docs/memory-boundary-doctrine.md",
+       "both",
+       0.6064
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "why online ads keep missing their audience",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-12-15_strip_mining_attention.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.7,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "amoeba/src/amoeba/turn_api.py",
+       "lexical",
+       0.4774
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "lexical",
+       0.4645
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "semantic",
+       0.7557
+      ],
+      [
+       "medium_corpus/2025-12-29_your_year_with_chatgpt.md",
+       "semantic",
+       0.6309
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.6165
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 30.1,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-29_your_year_with_chatgpt.md",
+       "both",
+       0.2811
+      ],
+      [
+       "medium_corpus/building_memory_across_reset.md",
+       "both",
+       0.2459
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "ghost story for an AI about a pattern that persisted across resets",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-10-31_the_pattern_that_stayed.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 4,
+     "recall5": 1.0,
+     "mrr": 0.25,
+     "latency_ms": 32.8,
+     "top": [
+      [
+       "medium_corpus/building_memory_across_reset.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-17_technomancy_manifesto.md",
+       "lexical",
+       0.9428
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "lexical",
+       0.9029
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "medium_corpus/2025-10-31_the_pattern_that_stayed.md",
+       "semantic",
+       0.7847
+      ],
+      [
+       "medium_corpus/2025-07-17_technical_case_for_myth.md",
+       "semantic",
+       0.7349
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "semantic",
+       0.723
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 46.7,
+     "top": [
+      [
+       "medium_corpus/2025-10-31_the_pattern_that_stayed.md",
+       "both",
+       0.931
+      ],
+      [
+       "medium_corpus/2025-07-17_technomancy_manifesto.md",
+       "both",
+       0.6683
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/supplemental/legivellum_whitepaper.md",
+       "both",
+       0.5918
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "should you let an AI pick your stock trades",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 30.7,
+     "top": [
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/memorygate-migration-guide_1.md",
+       "lexical",
+       0.6786
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "lexical",
+       0.524
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.1,
+     "top": [
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "semantic",
+       0.8393
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "semantic",
+       0.7114
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "semantic",
+       0.6901
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 40.4,
+     "top": [
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "both",
+       0.4365
+      ],
+      [
+       "medium_corpus/2025-07-19_we_are_all_ai_automation_engineers.md",
+       "both",
+       0.2936
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "what a language model actually is while it is generating",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-12-22_not_just_tokens.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 32.2,
+     "top": [
+      [
+       "medium_corpus/2025-10-23_knowledge_firewall_trap.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "amoeba/src/amoeba/inference_service.py",
+       "lexical",
+       0.953
+      ],
+      [
+       "medium_corpus/2025-07-18_real_life_mad_scientist.md",
+       "lexical",
+       0.9209
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "medium_corpus/2025-08-01_applied_technomancy_compression_effects.md",
+       "semantic",
+       0.7585
+      ],
+      [
+       "amoeba/src/amoeba/backends/structure.py",
+       "semantic",
+       0.7438
+      ],
+      [
+       "amoeba/src/amoeba/roles.py",
+       "semantic",
+       0.735
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 42.2,
+     "top": [
+      [
+       "amoeba/src/amoeba/roles.py",
+       "both",
+       0.8079
+      ],
+      [
+       "medium_corpus/2025-08-01_applied_technomancy_compression_effects.md",
+       "both",
+       0.8012
+      ],
+      [
+       "amoeba/src/amoeba/inference_service.py",
+       "both",
+       0.7728
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "AI bubble correction won't take down the whole economy",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+    "medium_corpus/2025-12-27_ai_industry_not_unraveling.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.3,
+     "top": [
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-08-09_ai_therapist_inevitable.md",
+       "lexical",
+       0.8262
+      ],
+      [
+       "root/memorygate-migration-guide_1.md",
+       "lexical",
+       0.6379
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.6,
+     "top": [
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "semantic",
+       0.7842
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.7263
+      ],
+      [
+       "medium_corpus/2025-12-16_delegation_vs_augmentation_ai_trading.md",
+       "semantic",
+       0.6962
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 31.4,
+     "top": [
+      [
+       "medium_corpus/2025-12-27_ai_correction_wont_crash_economy.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "both",
+       0.6396
+      ],
+      [
+       "medium_corpus/2025-08-09_ai_therapist_inevitable.md",
+       "both",
+       0.4934
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "you are your body, not a mind riding inside a vehicle",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 2,
+     "recall5": 1.0,
+     "mrr": 0.5,
+     "latency_ms": 34.7,
+     "top": [
+      [
+       "amoeba/tests/test_evidence_lineage.py",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md",
+       "lexical",
+       0.9974
+      ],
+      [
+       "amoeba/tests/test_persistent_turns.py",
+       "lexical",
+       0.8633
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md",
+       "semantic",
+       0.7322
+      ],
+      [
+       "medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md",
+       "semantic",
+       0.6522
+      ],
+      [
+       "medium_corpus/field_note_interpretation_drift.md",
+       "semantic",
+       0.6375
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 44.8,
+     "top": [
+      [
+       "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md",
+       "both",
+       0.9985
+      ],
+      [
+       "amoeba/tests/test_evidence_lineage.py",
+       "both",
+       0.6084
+      ],
+      [
+       "amoeba/tests/test_persistent_turns.py",
+       "both",
+       0.4632
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "people forming relationships with responsive machines that mirror them",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-10-22_we_are_learning_to_talk_to_our_own_reflections.md",
+    "medium_corpus/2025-10-22_beyond_fear_ethics_of_emergent_companionship.md",
+    "medium_corpus/2025-10-15_when_feedback_becomes_friendship.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 23.4,
+     "top": [
+      [
+       "medium_corpus/2025-10-22_we_are_learning_to_talk_to_our_own_reflections.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "lexical",
+       0.8042
+      ],
+      [
+       "medium_corpus/2025-10-15_when_feedback_becomes_friendship.md",
+       "lexical",
+       0.7312
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "medium_corpus/2025-10-22_we_are_learning_to_talk_to_our_own_reflections.md",
+       "semantic",
+       0.7887
+      ],
+      [
+       "medium_corpus/2025-10-15_when_feedback_becomes_friendship.md",
+       "semantic",
+       0.727
+      ],
+      [
+       "medium_corpus/2025-07-17_technomancy_manifesto.md",
+       "semantic",
+       0.7085
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 29.5,
+     "top": [
+      [
+       "medium_corpus/2025-10-22_we_are_learning_to_talk_to_our_own_reflections.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-10-15_when_feedback_becomes_friendship.md",
+       "both",
+       0.6618
+      ],
+      [
+       "medium_corpus/2025-10-22_beyond_fear_ethics_of_emergent_companionship.md",
+       "both",
+       0.541
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "sharing memes with your assistant tunes it to you",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-08-01_meme_loops_and_micro_attunement.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 20.6,
+     "top": [
+      [
+       "medium_corpus/2025-08-01_meme_loops_and_micro_attunement.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-18_when_compression_breaks.md",
+       "lexical",
+       0.6985
+      ],
+      [
+       "root/bios.md",
+       "lexical",
+       0.573
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.6,
+     "top": [
+      [
+       "medium_corpus/2025-08-01_meme_loops_and_micro_attunement.md",
+       "semantic",
+       0.7557
+      ],
+      [
+       "glyphlite/llama.cpp/examples/low_level_api/miku.py",
+       "semantic",
+       0.681
+      ],
+      [
+       "glyphlite/llama-cpp-python/examples/low_level_api/miku.py",
+       "semantic",
+       0.681
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 27.7,
+     "top": [
+      [
+       "medium_corpus/2025-08-01_meme_loops_and_micro_attunement.md",
+       "both",
+       1.0
+      ],
+      [
+       "glyphlite/llama.cpp/llama_cpp/llama_chat_format.py",
+       "both",
+       0.4537
+      ],
+      [
+       "glyphlite/llama-cpp-python/llama_cpp/llama_chat_format.py",
+       "both",
+       0.4537
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "detecting AI-written text by em dashes is gatekeeping",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.7,
+     "top": [
+      [
+       "medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "tablacognita-saas/editor/app.js",
+       "lexical",
+       0.4291
+      ],
+      [
+       "lv_stack/tests/delegate/tests/test_planner.py",
+       "lexical",
+       0.372
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md",
+       "semantic",
+       0.7514
+      ],
+      [
+       "root/content_ethics_whitepaper.docx",
+       "semantic",
+       0.7459
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.7429
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 35.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-21_what_does_writing_mean_in_age_of_ai.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "both",
+       0.5881
+      ],
+      [
+       "root/content_ethics_whitepaper.docx",
+       "semantic",
+       0.5653
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "narrative RPG engine where the server owns canon and the model is an untrusted performer",
+   "kind": "vague",
+   "relevant": [
+    "worldsmith/"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 2.0,
+     "mrr": 1.0,
+     "latency_ms": 20.4,
+     "top": [
+      [
+       "worldsmith/spec/readme.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "worldsmith/claude.md",
+       "lexical",
+       0.9451
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 5.0,
+     "mrr": 1.0,
+     "latency_ms": 7.5,
+     "top": [
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.7408
+      ],
+      [
+       "worldsmith/spec/readme.md",
+       "semantic",
+       0.7294
+      ],
+      [
+       "worldsmith/spec/00-platform-spec.md",
+       "semantic",
+       0.7077
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 5.0,
+     "mrr": 1.0,
+     "latency_ms": 29.1,
+     "top": [
+      [
+       "worldsmith/spec/readme.md",
+       "both",
+       0.9539
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.6
+      ],
+      [
+       "worldsmith/spec/00-platform-spec.md",
+       "semantic",
+       0.4655
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "predictive coding sidecar that tunes sampling temperature for a frozen LLM",
+   "kind": "vague",
+   "relevant": [
+    "pcdc/README.md",
+    "pcdc/pcdc-experiment7-paper.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 17.6,
+     "top": [
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "semantic",
+       0.8634
+      ],
+      [
+       "pcdc/readme.md",
+       "semantic",
+       0.7923
+      ],
+      [
+       "residual-bus/readme.md",
+       "semantic",
+       0.7718
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 25.4,
+     "top": [
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "both",
+       1.0
+      ],
+      [
+       "pcdc/readme.md",
+       "semantic",
+       0.3836
+      ],
+      [
+       "residual-bus/readme.md",
+       "semantic",
+       0.3209
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "writing into the residual stream of a small frozen model with forward hooks",
+   "kind": "vague",
+   "relevant": [
+    "residual-bus/README.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 27.8,
+     "top": [
+      [
+       "residual-bus/readme.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "residual-bus/residual_resume.py",
+       "lexical",
+       0.9079
+      ],
+      [
+       "residual-bus/intervention.py",
+       "lexical",
+       0.8068
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.4,
+     "top": [
+      [
+       "residual-bus/readme.md",
+       "semantic",
+       0.8526
+      ],
+      [
+       "residual-bus/cartography.py",
+       "semantic",
+       0.7912
+      ],
+      [
+       "root/2602.12205v2.pdf",
+       "semantic",
+       0.7822
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 39.7,
+     "top": [
+      [
+       "residual-bus/readme.md",
+       "both",
+       1.0
+      ],
+      [
+       "residual-bus/intervention.py",
+       "both",
+       0.624
+      ],
+      [
+       "residual-bus/residual_resume.py",
+       "both",
+       0.6127
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "persistence is the mind and models are replaceable processes",
+   "kind": "vague",
+   "relevant": [
+    "amoeba/README.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 26.5,
+     "top": [
+      [
+       "amoeba/readme.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.9,
+     "top": [
+      [
+       "amoeba/readme.md",
+       "semantic",
+       0.7157
+      ],
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "semantic",
+       0.7048
+      ],
+      [
+       "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md",
+       "semantic",
+       0.7043
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 36.9,
+     "top": [
+      [
+       "amoeba/readme.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "semantic",
+       0.5375
+      ],
+      [
+       "medium_corpus/2025-10-29_you_dont_have_a_body_you_are_one.md",
+       "semantic",
+       0.5349
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "bookkeeping container for closed-world puzzles with branch trees and rule-outs",
+   "kind": "vague",
+   "relevant": [
+    "EnumiGate/README.MD",
+    "EnumiGate/SPEC.MD",
+    "EnumiGate/CLAUDE.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.3333333333333333,
+     "mrr": 1.0,
+     "latency_ms": 25.0,
+     "top": [
+      [
+       "enumigate/claude.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.3,
+     "top": [
+      [
+       "enumigate/spec.md",
+       "semantic",
+       0.7794
+      ],
+      [
+       "enumigate/readme.md",
+       "semantic",
+       0.7774
+      ],
+      [
+       "enumigate/src/enumigate/schemas/sokoban.py",
+       "semantic",
+       0.7642
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 33.0,
+     "top": [
+      [
+       "enumigate/claude.md",
+       "both",
+       0.9162
+      ],
+      [
+       "enumigate/spec.md",
+       "semantic",
+       0.6
+      ],
+      [
+       "enumigate/readme.md",
+       "semantic",
+       0.5893
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "make receipts constitutive across the gate repositories",
+   "kind": "vague",
+   "relevant": [
+    "LV_Stack/SLICE_ZERO_PROMPT.md",
+    "LV_Stack/SLICE_ZERO_STATE.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": 12,
+     "recall5": 0.0,
+     "mrr": 0.08333333333333333,
+     "latency_ms": 22.1,
+     "top": [
+      [
+       "lv_stack/lv_stack_review.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/metagate.bootstrap.md",
+       "lexical",
+       0.9208
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "lexical",
+       0.8875
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "lv_stack/slice_zero_prompt.md",
+       "semantic",
+       0.8019
+      ],
+      [
+       "lv_stack/receiptgate/readme.md",
+       "semantic",
+       0.7603
+      ],
+      [
+       "lv_stack/_cross_repo_analysis.md",
+       "semantic",
+       0.7577
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 30.1,
+     "top": [
+      [
+       "lv_stack/slice_zero_prompt.md",
+       "both",
+       0.8433
+      ],
+      [
+       "lv_stack/lv_stack_review.md",
+       "both",
+       0.7613
+      ],
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "both",
+       0.5935
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "consensus mediation under ambiguity for multi-agent decisions",
+   "kind": "vague",
+   "relevant": [
+    "LV_Stack/tavoliere.consensus-engine.design.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 18.0,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "semantic",
+       0.8588
+      ],
+      [
+       "enumigate/spec.md",
+       "semantic",
+       0.7363
+      ],
+      [
+       "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md",
+       "semantic",
+       0.7307
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 27.7,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "both",
+       1.0
+      ],
+      [
+       "enumigate/spec.md",
+       "semantic",
+       0.2555
+      ],
+      [
+       "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md",
+       "semantic",
+       0.2398
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "which gate repositories had uncommitted changes at the freeze",
+   "kind": "vague",
+   "relevant": [
+    "LV_Stack/BASELINE_FREEZE_2026-02-23.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 24.0,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "memorygate-saas/spec-as-built.md",
+       "lexical",
+       0.9676
+      ],
+      [
+       "memorygate-saas/docs/spec-as-built.md",
+       "lexical",
+       0.9676
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.7,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "semantic",
+       0.7567
+      ],
+      [
+       "lv_stack/_cross_repo_analysis.md",
+       "semantic",
+       0.7036
+      ],
+      [
+       "lv_stack/slice_zero_state.md",
+       "semantic",
+       0.7011
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 32.9,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "both",
+       1.0
+      ],
+      [
+       "lv_stack/_cross_repo_analysis.md",
+       "both",
+       0.555
+      ],
+      [
+       "lv_stack/slice_zero_state.md",
+       "both",
+       0.4751
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "ethical scoring of AI language along seven axes",
+   "kind": "vague",
+   "relevant": [
+    "root/Content_Ethics_Whitepaper.docx"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 55.5,
+     "top": [
+      [
+       "root/content_ethics_whitepaper.docx",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.3,
+     "top": [
+      [
+       "root/content_ethics_whitepaper.docx",
+       "semantic",
+       0.8753
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.8
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "semantic",
+       0.788
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 65.3,
+     "top": [
+      [
+       "root/content_ethics_whitepaper.docx",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-12-27_ai_industry_not_unraveling.md",
+       "semantic",
+       0.3748
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "semantic",
+       0.3389
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "unified lightweight model for image generation and editing",
+   "kind": "vague",
+   "relevant": [
+    "root/2602.12205v2.pdf"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 55.6,
+     "top": [
+      [
+       "root/2602.12205v2.pdf",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.8,
+     "top": [
+      [
+       "root/2602.12205v2.pdf",
+       "semantic",
+       0.8591
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.7157
+      ],
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "semantic",
+       0.7101
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 64.1,
+     "top": [
+      [
+       "root/2602.12205v2.pdf",
+       "both",
+       1.0
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.2122
+      ],
+      [
+       "pcdc/pcdc-experiment7-paper.md",
+       "semantic",
+       0.1971
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "memory ownership is the right architecture and the protocol that makes it possible",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.7,
+     "top": [
+      [
+       "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/supplemental/legivellum_whitepaper.md",
+       "lexical",
+       0.8653
+      ],
+      [
+       "memorygate-saas/spec-as-built.md",
+       "lexical",
+       0.853
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.7,
+     "top": [
+      [
+       "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md",
+       "semantic",
+       0.7824
+      ],
+      [
+       "memorygate-saas/readme.md",
+       "semantic",
+       0.7733
+      ],
+      [
+       "memorygate-saas/docs/readme.md",
+       "semantic",
+       0.7733
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 31.9,
+     "top": [
+      [
+       "medium_corpus/2025-01-03_ai_memory_is_broken_mcp_fix.md",
+       "both",
+       1.0
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/supplemental/legivellum_whitepaper.md",
+       "both",
+       0.8077
+      ],
+      [
+       "memorygate-saas/readme.md",
+       "both",
+       0.7751
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "why I frame my AI work as myth and ritual instead of plain engineering",
+   "kind": "vague",
+   "relevant": [
+    "medium_corpus/2025-07-17_technical_case_for_myth.md",
+    "medium_corpus/2025-07-17_technomancy_manifesto.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 93.2,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_technical_case_for_myth.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-18_real_life_mad_scientist.md",
+       "lexical",
+       0.9597
+      ],
+      [
+       "medium_corpus/2025-08-01_the_sliver_in_the_loop.md",
+       "lexical",
+       0.7905
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_technical_case_for_myth.md",
+       "semantic",
+       0.8231
+      ],
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "semantic",
+       0.7501
+      ],
+      [
+       "medium_corpus/2025-08-04_what_they_tell_you_not_to_do.md",
+       "semantic",
+       0.7488
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 0.5,
+     "mrr": 1.0,
+     "latency_ms": 101.2,
+     "top": [
+      [
+       "medium_corpus/2025-07-17_technical_case_for_myth.md",
+       "both",
+       1.0
+      ],
+      [
+       "medium_corpus/2025-07-19_oh_thats_cute.md",
+       "both",
+       0.6113
+      ],
+      [
+       "medium_corpus/2025-07-17_latency_of_drift.md",
+       "both",
+       0.5692
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "RLHF as Narcissism Selection Pressure",
+   "kind": "exact",
+   "relevant": [
+    "root/RLHF Leads to Narcissicism in agents.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 14.3,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.6,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "semantic",
+       0.7882
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "semantic",
+       0.6729
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.6696
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.0,
+     "top": [
+      [
+       "root/rlhf leads to narcissicism in agents.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "semantic",
+       0.2459
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.2356
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "Tavoliere consensus",
+   "kind": "exact",
+   "relevant": [
+    "LV_Stack/tavoliere.consensus-engine.design.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 13.4,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.4,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "semantic",
+       0.8037
+      ],
+      [
+       "tablacognita-saas/docs/multi-user-spec.md",
+       "semantic",
+       0.6448
+      ],
+      [
+       "residual-bus/phase3_additive.py",
+       "semantic",
+       0.6275
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 21.3,
+     "top": [
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "both",
+       1.0
+      ],
+      [
+       "tablacognita-saas/docs/multi-user-spec.md",
+       "semantic",
+       0.1791
+      ],
+      [
+       "residual-bus/phase3_additive.py",
+       "semantic",
+       0.1333
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "mg-export.jsonl.gz",
+   "kind": "exact",
+   "relevant": [
+    "root/MG-MIGRATION-HANDOFF.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 15.1,
+     "top": [
+      [
+       "root/mg-migration-handoff.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 7.0,
+     "top": [
+      [
+       "root/mg-migration-handoff.md",
+       "semantic",
+       0.7649
+      ],
+      [
+       "glyphlite/llama.cpp/examples/high_level_api/high_level_api_streaming.py",
+       "semantic",
+       0.7221
+      ],
+      [
+       "glyphlite/llama-cpp-python/examples/high_level_api/high_level_api_streaming.py",
+       "semantic",
+       0.7221
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 23.3,
+     "top": [
+      [
+       "root/mg-migration-handoff.md",
+       "both",
+       1.0
+      ],
+      [
+       "glyphlite/llama.cpp/examples/high_level_api/high_level_api_streaming.py",
+       "semantic",
+       0.3458
+      ],
+      [
+       "glyphlite/llama-cpp-python/examples/high_level_api/high_level_api_streaming.py",
+       "semantic",
+       0.3458
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "Signalkeeper Glyphkeeper composite scoring",
+   "kind": "exact",
+   "relevant": [
+    "root/SignalKeeper_1.1.txt"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 32.9,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "semantic",
+       0.8204
+      ],
+      [
+       "root/content_ethics_whitepaper.docx",
+       "semantic",
+       0.7831
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "semantic",
+       0.7545
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 42.0,
+     "top": [
+      [
+       "root/signalkeeper_1.1.txt",
+       "both",
+       1.0
+      ],
+      [
+       "root/content_ethics_whitepaper.docx",
+       "semantic",
+       0.4771
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "semantic",
+       0.383
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "Strip-mining Attention",
+   "kind": "exact",
+   "relevant": [
+    "medium_corpus/2025-12-15_strip_mining_attention.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 13.5,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 5.9,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "semantic",
+       0.7478
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.6866
+      ],
+      [
+       "root/2602.12205v2.pdf",
+       "semantic",
+       0.6805
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 21.7,
+     "top": [
+      [
+       "medium_corpus/2025-12-15_strip_mining_attention.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/# compression tastes like red - qua.txt",
+       "semantic",
+       0.3248
+      ],
+      [
+       "root/2602.12205v2.pdf",
+       "semantic",
+       0.2976
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "CHoose2",
+   "kind": "exact",
+   "relevant": [
+    "medium_corpus/2025-07-19_choose2_brutal_filter.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 13.3,
+     "top": [
+      [
+       "medium_corpus/2025-07-19_choose2_brutal_filter.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": 5,
+     "recall5": 1.0,
+     "mrr": 0.2,
+     "latency_ms": 5.6,
+     "top": [
+      [
+       "amoeba/src/amoeba/prompt_api.py",
+       "semantic",
+       0.6862
+      ],
+      [
+       "amoeba/src/amoeba/promptlib/store.py",
+       "semantic",
+       0.6655
+      ],
+      [
+       "amoeba/src/amoeba/store/db.py",
+       "semantic",
+       0.6636
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 20.6,
+     "top": [
+      [
+       "medium_corpus/2025-07-19_choose2_brutal_filter.md",
+       "both",
+       0.8033
+      ],
+      [
+       "amoeba/src/amoeba/prompt_api.py",
+       "semantic",
+       0.6
+      ],
+      [
+       "amoeba/src/amoeba/promptlib/store.py",
+       "semantic",
+       0.4791
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "PCHead settle_k online_eta_w",
+   "kind": "exact",
+   "relevant": [
+    "pcdc/"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 5.0,
+     "mrr": 1.0,
+     "latency_ms": 15.0,
+     "top": [
+      [
+       "pcdc/scripts/exp6_cognitive_loop.py",
+       "lexical",
+       1.0
+      ],
+      [
+       "pcdc/src/pcdc/server/steering.py",
+       "lexical",
+       0.9982
+      ],
+      [
+       "pcdc/readme.md",
+       "lexical",
+       0.884
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 5.0,
+     "mrr": 1.0,
+     "latency_ms": 6.5,
+     "top": [
+      [
+       "pcdc/src/pcdc/server/steering.py",
+       "semantic",
+       0.8057
+      ],
+      [
+       "pcdc/readme.md",
+       "semantic",
+       0.7239
+      ],
+      [
+       "pcdc/src/pcdc/utils/config.py",
+       "semantic",
+       0.7099
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 5.0,
+     "mrr": 1.0,
+     "latency_ms": 23.6,
+     "top": [
+      [
+       "pcdc/src/pcdc/server/steering.py",
+       "both",
+       0.9985
+      ],
+      [
+       "pcdc/readme.md",
+       "both",
+       0.6386
+      ],
+      [
+       "pcdc/scripts/exp8_bitnet_server_modulation.py",
+       "both",
+       0.4496
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "Baseline Freeze Snapshot",
+   "kind": "exact",
+   "relevant": [
+    "LV_Stack/BASELINE_FREEZE_2026-02-23.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 17.8,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "lexical",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 5.9,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "semantic",
+       0.7713
+      ],
+      [
+       "amoeba/src/amoeba/promptlib/bootstrap.py",
+       "semantic",
+       0.7243
+      ],
+      [
+       "tablacognita-saas/test/relay.test.js",
+       "semantic",
+       0.7238
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 23.8,
+     "top": [
+      [
+       "lv_stack/baseline_freeze_2026-02-23.md",
+       "both",
+       1.0
+      ],
+      [
+       "amoeba/src/amoeba/promptlib/bootstrap.py",
+       "semantic",
+       0.3874
+      ],
+      [
+       "tablacognita-saas/test/relay.test.js",
+       "semantic",
+       0.3853
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "*.vtt",
+   "kind": "filename",
+   "relevant": [
+    "root/sample-transcript.vtt"
+   ],
+   "modes": {
+    "literal": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 0.1,
+     "top": []
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 0.0,
+     "top": []
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 0.1,
+     "top": []
+    }
+   }
+  },
+  {
+   "q": "punchlist",
+   "kind": "filename",
+   "relevant": [
+    "root/INTEGRATION_PUNCHLIST.md"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 13.1,
+     "top": [
+      [
+       "root/integration_punchlist.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "lv_stack/_cross_repo_analysis.md",
+       "lexical",
+       0.5862
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 5.2,
+     "top": [
+      [
+       "residual-bus/results/expb/experiment_b.json",
+       "semantic",
+       0.6175
+      ],
+      [
+       "pcdc/src/pcdc/gguf/datasets.py",
+       "semantic",
+       0.6174
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.6173
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": false,
+     "first_rank": 9,
+     "recall5": 0.0,
+     "mrr": 0.1111111111111111,
+     "latency_ms": 19.7,
+     "top": [
+      [
+       "residual-bus/results/expb/experiment_b.json",
+       "semantic",
+       0.6
+      ],
+      [
+       "pcdc/src/pcdc/gguf/datasets.py",
+       "semantic",
+       0.5988
+      ],
+      [
+       "worldsmith/spec/01-resolution-and-leverage.md",
+       "semantic",
+       0.5971
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "mitnick protocol",
+   "kind": "filename",
+   "relevant": [
+    "root/The_Mitnick_Protocol_Campaign_Bible_Player_Optimized.md",
+    "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 22.5,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "lexical",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "lexical",
+       1.0
+      ],
+      [
+       "tablacognita-saas/shared/protocol.js",
+       "filename",
+       0.8
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 5.4,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "semantic",
+       0.8076
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "semantic",
+       0.7786
+      ],
+      [
+       "lv_stack/tavoliere.consensus-engine.design.md",
+       "semantic",
+       0.6574
+      ]
+     ]
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 30.0,
+     "top": [
+      [
+       "root/the_mitnick_protocol_campaign_bible_player_optimized.md",
+       "both",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "both",
+       0.9793
+      ],
+      [
+       "lv_stack/docs/legivellum/docs/canonical/legacy/receipt_protocol.md",
+       "both",
+       0.1789
+      ]
+     ]
+    }
+   }
+  },
+  {
+   "q": "*.docx",
+   "kind": "filename",
+   "relevant": [
+    "root/Content_Ethics_Whitepaper.docx",
+    "root/GlyphKeeper 2.docx",
+    "root/The_Mitnick_Protocol_Campaign_Bible_1_with_Appendix_B.docx"
+   ],
+   "modes": {
+    "literal": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 0.1,
+     "top": [
+      [
+       "root/content_ethics_whitepaper.docx",
+       "filename",
+       1.0
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "filename",
+       1.0
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "filename",
+       1.0
+      ]
+     ]
+    },
+    "semantic": {
+     "top1": false,
+     "first_rank": null,
+     "recall5": 0.0,
+     "mrr": 0.0,
+     "latency_ms": 0.0,
+     "top": []
+    },
+    "hybrid": {
+     "top1": true,
+     "first_rank": 1,
+     "recall5": 1.0,
+     "mrr": 1.0,
+     "latency_ms": 0.1,
+     "top": [
+      [
+       "root/content_ethics_whitepaper.docx",
+       "filename",
+       0.5
+      ],
+      [
+       "root/glyphkeeper 2.docx",
+       "filename",
+       0.5
+      ],
+      [
+       "root/the_mitnick_protocol_campaign_bible_1_with_appendix_b.docx",
+       "filename",
+       0.5
+      ]
+     ]
+    }
+   }
+  }
+ ]
+}
