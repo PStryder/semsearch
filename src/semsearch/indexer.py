@@ -34,7 +34,8 @@ from .config import Config
 from .embed.base import EmbeddingProvider
 from .extract.registry import ExtractorRegistry
 from .models import FileEntry
-from .security import PathRejected, check_indexable, display_path, is_excluded, is_within, normalize_path, root_for, true_case_path
+from .security import (PathRejected, check_indexable, display_path, file_extension, is_excluded, is_within, normalize_path,
+                       root_for, suspected_secret, true_case_path)
 from .store.db import Store, file_hash, text_hash
 
 log = logging.getLogger(__name__)
@@ -103,7 +104,7 @@ class IndexerState:
         now = time.time()
         docs = chunks = 0
         oldest = now
-        for ts, d, c in self.recent:
+        for ts, d, c in list(self.recent):  # copy: the worker appends concurrently
             if now - ts <= window_s:
                 docs += d
                 chunks += c
@@ -139,6 +140,10 @@ class Indexer:
         n = self.store.requeue_running()
         if n:
             log.info("requeued %d jobs left running by a previous process", n)
+        try:
+            self.enforce_scope()
+        except Exception as e:
+            log.warning("scope enforcement failed: %s", e)
         self._stop.clear()
         self.state.running = True
         self.state.started_at = time.time()
@@ -178,9 +183,12 @@ class Indexer:
         if not is_within(p, self.roots):
             raise PathRejected(f"outside configured roots: {p}")
         if os.path.isdir(p):
+            if is_excluded(p, self.cfg.excludes, is_dir=True):
+                raise PathRejected("directory matches an exclusion pattern")
             n = self._enqueue_tree(p, priority)
             self._wake.set()
             return {"enqueued": n, "kind": "directory"}
+        self._check_policy(p)
         self.store.enqueue(normalize_path(p), "index", priority)
         self._wake.set()
         return {"enqueued": 1, "kind": "file"}
@@ -192,11 +200,9 @@ class Indexer:
         if self.store.remove_document(n):
             removed = 1
         else:
-            prefix = n.rstrip("\\") + "\\"
-            for doc_id, dp, _ in list(self.store.iter_paths()):
-                if dp.startswith(prefix):
-                    self.store.remove_document_id(doc_id)
-                    removed += 1
+            for doc_id, _ in self.store.paths_with_prefix(n):
+                self.store.remove_document_id(doc_id)
+                removed += 1
         self.state.docs_removed += removed
         return {"removed": removed}
 
@@ -225,7 +231,7 @@ class Indexer:
         return self.fs
 
     def _wanted(self, fe: FileEntry) -> bool:
-        ext = (fe.extension or os.path.splitext(fe.path)[1]).lower()
+        ext = (fe.extension or file_extension(fe.path)).lower()
         if ext not in self.allowed_ext:
             return False
         if is_excluded(fe.path, self.cfg.excludes):
@@ -234,33 +240,32 @@ class Indexer:
             return False
         return True
 
-    def _enumerate_root(self, root: str):
-        """Yield every wanted file under root. Windows Search is used first when it covers the
-        root (fast, metadata included), then a direct filesystem walk fills in anything the
-        indexer has not gathered yet or excludes by its own rules."""
+    def _enumerate(self, directory: str, root: str | None = None):
+        """Yield every file under directory. Windows Search is used first when it covers the
+        containing root (fast, metadata included), then a direct filesystem walk fills in
+        anything the indexer has not gathered yet (new folders, lag) or excludes by its own rules."""
+        root = root or root_for(directory, self.roots) or normalize_path(directory)
         src = self._source_for(root)
         seen: set[str] = set()
         if src is self.win:
             try:
-                for fe in src.enumerate(root):
+                for fe in src.enumerate(directory):
                     seen.add(normalize_path(fe.path))
                     yield fe
                 self.state.sources[root] = "windows_search+fs"
             except Exception as e:
-                log.warning("Windows Search enumeration of %s failed (%s); falling back to filesystem walk", root, e)
+                log.warning("Windows Search enumeration of %s failed (%s); falling back to filesystem walk", directory, e)
                 self.state.sources[root] = "fs"
-        for fe in self.fs.enumerate(root):
+        for fe in self.fs.enumerate(directory):
             if normalize_path(fe.path) in seen:
                 continue
             yield fe
 
+    def _enumerate_root(self, root: str):
+        return self._enumerate(root, root)
+
     def _enqueue_tree(self, directory: str, priority: int) -> int:
-        root = root_for(directory, self.roots)
-        src = self._source_for(root) if root else self.fs
-        items = []
-        for fe in src.enumerate(directory):
-            if self._wanted(fe):
-                items.append((normalize_path(fe.path), "index", priority))
+        items = [(normalize_path(fe.path), "index", priority) for fe in self._enumerate(directory) if self._wanted(fe)]
         return self.store.enqueue_many(items)
 
     def full_build(self) -> dict[str, Any]:
@@ -304,7 +309,13 @@ class Indexer:
             self._wake.set()
         return {"enqueued": total, "seconds": round(time.time() - t0, 1)}
 
-    def incremental(self) -> dict[str, Any]:
+    _last_fs_scan: dict[str, float] = {}
+
+    def incremental(self, force: bool = True) -> dict[str, Any]:
+        """Enqueue files changed since each root's checkpoint. Windows-indexed roots are a cheap
+        GatherTime query; roots without Windows coverage need a full mtime walk, which the
+        scheduler (force=False) runs at most every fs_poll_interval_s, relying on the watcher
+        in between."""
         total = 0
         for root in self.roots:
             if not os.path.isdir(root):
@@ -313,6 +324,11 @@ class Indexer:
             cp_raw = self.store.get_meta(f"checkpoint:{root}")
             if cp_raw is None:
                 continue  # no full build yet for this root
+            if src is self.fs and not force:
+                if time.time() - self._last_fs_scan.get(root, 0.0) < self.cfg.indexing.fs_poll_interval_s:
+                    continue
+            if src is self.fs:
+                self._last_fs_scan[root] = time.time()
             since = float(cp_raw) - 5.0
             max_seen = float(cp_raw)
             batch: list[tuple[str, str, int]] = []
@@ -345,20 +361,47 @@ class Indexer:
         return {"enqueued": total}
 
     def reconcile(self) -> dict[str, Any]:
+        """Full enumeration diff in both directions: tombstone what vanished, and enqueue files
+        the store lacks or holds with a stale size/mtime (recovers lost watcher events and
+        Windows Search gaps)."""
         removed = 0
+        added = 0
         for root in self.roots:
             if not os.path.isdir(root):
                 continue
-            seen = {normalize_path(fe.path) for fe in self._enumerate_root(root) if self._wanted(fe)}
+            seen: set[str] = set()
+            batch: list[tuple[str, str, int]] = []
+            for fe in self._enumerate_root(root):
+                if not self._wanted(fe):
+                    continue
+                n = normalize_path(fe.path)
+                seen.add(n)
+                row = self.store.get_document(n)
+                if row is None or fe.size is None or fe.mtime is None or not self._stat_unchanged(row, fe.size, fe.mtime):
+                    batch.append((n, "index", PRIO_INCREMENTAL))
+                    if len(batch) >= 2000:
+                        added += self.store.enqueue_many(batch)
+                        batch = []
+            if batch:
+                added += self.store.enqueue_many(batch)
             removed += self._reconcile_root(root, seen)
         self.state.last_reconcile_at = time.time()
-        return {"removed": removed}
+        if added:
+            self._wake.set()
+        return {"removed": removed, "enqueued": added}
 
     def _reconcile_root(self, root: str, seen: set[str]) -> int:
         """Tombstone documents that are no longer present, then purge tombstones older than the
         grace period. Tombstoning (instead of deleting) lets a rename that is indexed later reclaim
         the document's chunks and vectors through the NTFS file id."""
         removed = 0
+        known = self.store.count_documents(root)
+        if known > 100 and len(seen) < self.cfg.indexing.reconcile_min_fraction * known:
+            # an enumeration that lost most of the tree (permission error, unmounted volume,
+            # indexer outage) must not look like mass deletion
+            log.warning("reconcile %s: enumeration returned %d files but %d are indexed; skipping tombstoning", root, len(seen), known)
+            self.store.record_error(root, "reconcile", f"enumeration returned {len(seen)} of {known} known files; tombstoning skipped")
+            return 0
         for doc_id, p, _ in list(self.store.iter_paths(root)):
             if p in seen:
                 continue
@@ -376,15 +419,22 @@ class Indexer:
     def tombstone_grace_s(self) -> float:
         return max(600.0, self.cfg.indexing.reconcile_interval_s)
 
-    def reembed_stale(self, batch_docs: int = 200) -> int:
-        """Re-embed documents whose vectors belong to a different model, from stored chunk text."""
-        rows = self.store.documents_needing_embedding(self.fingerprint, batch_docs)
-        if not rows:
-            return 0
-        items = [(r["path"], "reembed", PRIO_REEMBED) for r in rows]
-        n = self.store.enqueue_many(items)
-        self._wake.set()
-        return n
+    def reembed_stale(self, batch_docs: int = 1000) -> int:
+        """Enqueue every document whose vectors belong to a different model (re-embedded from
+        stored chunk text). Pages by id so the whole backlog is queued in one pass."""
+        total = 0
+        after = 0
+        while True:
+            rows = self.store.documents_needing_embedding(self.fingerprint, batch_docs, after_id=after)
+            if not rows:
+                break
+            total += self.store.enqueue_many((r["path"], "reembed", PRIO_REEMBED) for r in rows)
+            after = int(rows[-1]["id"])
+            if len(rows) < batch_docs:
+                break
+        if total:
+            self._wake.set()
+        return total
 
     # ---------- watcher ----------
     def _on_watch_event(self, action: str, path: str, old_path: str | None = None) -> None:
@@ -396,10 +446,8 @@ class Indexer:
                 if self.store.get_document(n_old) is not None:
                     self.store.enqueue(n_old, "vanish", PRIO_WATCH + 1)
                 else:
-                    prefix = n_old.rstrip("\\") + "\\"
-                    for doc_id, dp, _ in list(self.store.iter_paths()):
-                        if dp.startswith(prefix):
-                            self.store.enqueue(dp, "vanish", PRIO_WATCH + 1)
+                    for doc_id, dp in self.store.paths_with_prefix(n_old):
+                        self.store.enqueue(dp, "vanish", PRIO_WATCH + 1)
                 if os.path.isdir(path):
                     self._enqueue_tree(display_path(path), PRIO_WATCH)
                     self._wake.set()
@@ -409,13 +457,15 @@ class Indexer:
                 if self.store.get_document(n) is not None:
                     self.store.enqueue(n, "vanish", PRIO_WATCH)
                 else:
-                    # directory removed: tombstone everything under it
-                    prefix = n.rstrip("\\") + "\\"
-                    for doc_id, dp, _ in list(self.store.iter_paths()):
-                        if dp.startswith(prefix):
-                            self.store.enqueue(dp, "vanish", PRIO_WATCH)
+                    # directory removed: tombstone everything under it (indexed range scan)
+                    for doc_id, dp in self.store.paths_with_prefix(n):
+                        self.store.enqueue(dp, "vanish", PRIO_WATCH)
+            elif os.path.isdir(path):
+                # a folder copied or moved into a root arrives as one 'added' event
+                if not is_excluded(path, self.cfg.excludes, is_dir=True):
+                    self._enqueue_tree(display_path(path), PRIO_WATCH)
             else:
-                ext = os.path.splitext(path)[1].lower()
+                ext = file_extension(path)
                 if ext in self.allowed_ext and not is_excluded(path, self.cfg.excludes):
                     self.store.enqueue(n, "index", PRIO_WATCH)
             self._wake.set()
@@ -440,7 +490,7 @@ class Indexer:
                     last_inc = last_rec = time.time()
                 now = time.time()
                 if now - last_inc >= self.cfg.indexing.poll_interval_s and not self.state.paused:
-                    self.incremental()
+                    self.incremental(force=False)
                     self.reembed_stale()
                     last_inc = now
                 if now - last_rec >= self.cfg.indexing.reconcile_interval_s and not self.state.paused:
@@ -507,6 +557,31 @@ class Indexer:
         finally:
             self.state.current_path = None
 
+    def _check_policy(self, path: str) -> None:
+        """Exclusion globs and the extension allow-list, enforced for every job regardless of
+        how it was enqueued (watcher, full build, explicit API/CLI request)."""
+        if is_excluded(path, self.cfg.excludes):
+            raise PathRejected("matches an exclusion pattern")
+        if file_extension(path) not in self.allowed_ext:
+            raise PathRejected(f"extension {file_extension(path) or '(none)'!r} is not in the configured extension lists")
+
+    def enforce_scope(self) -> dict[str, int]:
+        """Remove documents that the current configuration no longer covers: a root that was
+        removed from the config, or paths that now match an exclusion / lost their extension.
+        Runs once at startup so 'stop indexing this folder' also means 'stop showing it'."""
+        removed_root = removed_policy = 0
+        for doc_id, p, _ in list(self.store.iter_paths()):
+            if not is_within(p, self.roots):
+                self.store.remove_document_id(doc_id)
+                removed_root += 1
+            elif is_excluded(p, self.cfg.excludes) or file_extension(p) not in self.allowed_ext:
+                self.store.remove_document_id(doc_id)
+                removed_policy += 1
+        if removed_root or removed_policy:
+            log.info("scope enforcement: removed %d documents outside roots, %d by exclusion/extension policy", removed_root, removed_policy)
+            self.state.docs_removed += removed_root + removed_policy
+        return {"outside_roots": removed_root, "policy": removed_policy}
+
     def _stat_unchanged(self, row, size: int, mtime: float) -> bool:
         """Same size and mtime as the stored row, and nothing left to do for it: an 'ok' document
         must carry current-model vectors; non-text outcomes (empty/binary/unsupported/too_large)
@@ -516,19 +591,24 @@ class Indexer:
         st = row["extract_status"]
         if st == "ok":
             return row["embedding_fingerprint"] == self.fingerprint and row["n_chunks"] > 0
-        return st in ("empty", "binary", "unsupported", "too_large")
+        return st in ("empty", "binary", "unsupported", "too_large", "secret_suspected")
 
     def _index_file(self, path_norm: str) -> str:
         disp = true_case_path(path_norm)
         try:
             info = check_indexable(disp, self.roots, self.cfg.indexing.follow_reparse_points)
+            self._check_policy(disp)
         except FileNotFoundError:
             row = self.store.get_document(path_norm)
             if row is not None:
                 self.store.tombstone_document(int(row["id"]))
             return "missing"
         except PathRejected as e:
+            # policy applies to explicit requests too: an excluded or unsupported file is never
+            # indexed, and if it was indexed under an older policy it is removed now
             self.store.record_error(disp, "policy", str(e))
+            if self.store.remove_document(path_norm):
+                self.state.docs_removed += 1
             self.state.docs_skipped += 1
             return "rejected"
         if info.size > self.cfg.indexing.max_file_bytes:
@@ -569,42 +649,61 @@ class Indexer:
             for row in self.store.find_by_file_id(info.volume_serial, info.file_id):
                 if row["content_hash"] == chash and row["embedding_fingerprint"] == self.fingerprint \
                         and row["extract_status"] in ("ok", "missing") and row["n_chunks"] > 0 and not os.path.exists(row["display_path"]):
-                    self.store.restore_document(int(row["id"]), path=path_norm, display_path=disp, filename=os.path.basename(disp),
-                                                root=root_for(disp, self.roots), size=info.size, mtime=info.mtime, ctime=info.ctime, last_seen=now)
+                    new_ext = file_extension(disp)
+                    fields = dict(path=path_norm, display_path=disp, filename=os.path.basename(disp), extension=new_ext,
+                                  root=root_for(disp, self.roots), size=info.size, mtime=info.mtime, ctime=info.ctime, last_seen=now)
+                    # a filename-derived title follows the file; a heading-derived one does not change
+                    if row["title"] and row["title"] == derive_title("", row["display_path"]):
+                        fields["title"] = derive_title("", disp)
+                    self.store.restore_document(int(row["id"]), **fields)
                     self.state.docs_moved += 1
                     log.info("moved: %s -> %s (vectors kept)", row["display_path"], disp)
                     return "moved"
 
-        ext = os.path.splitext(disp)[1].lower()
+        ext = file_extension(disp)
         res = self.extractor.extract(disp, ext)
         extract_ms = (time.perf_counter() - t0) * 1000
         self.state.extract_ms += extract_ms
-        doc_id = self.store.upsert_document(
+        if res.status == "missing":
+            # deleted between stat and extract (temp/autosave files do this): tombstone, do not record a zombie
+            if existing is not None:
+                self.store.tombstone_document(int(existing["id"]))
+            return "missing"
+        if res.ok and self.cfg.indexing.skip_suspected_secrets:
+            hit = suspected_secret(res.text)
+            if hit:
+                res.status, res.error, res.text = "secret_suspected", f"credential pattern: {hit}", ""
+        fields = dict(
             path=path_norm, display_path=disp, root=root_for(disp, self.roots), filename=os.path.basename(disp), extension=ext,
             size=info.size, mtime=info.mtime, ctime=info.ctime, file_id=str(info.file_id), volume_serial=str(info.volume_serial),
             content_hash=chash, extract_status=res.status, extract_method=res.method, extract_error=res.error,
-            text_chars=len(res.text), indexed_at=now, last_seen=now, source="fs")
+            text_chars=len(res.text), indexed_at=now, last_seen=now, source="fs", missing_since=None, title=None)
         if not res.ok:
-            self.store.replace_chunks(doc_id, [], None, None)
+            self.store.write_document(fields, [], None, None)
             if res.status in ("error", "denied"):
                 self.store.record_error(disp, "extract", res.error or res.status)
                 self.state.docs_failed += 1
+            elif res.status == "secret_suspected":
+                self.store.record_error(disp, "policy", res.error or res.status)
+                self.state.docs_skipped += 1
             else:
                 self.state.docs_skipped += 1
             return res.status
 
         chunks = chunk_text(res.text, self.cfg.chunking, ext)
         if not chunks:
-            self.store.update_document(doc_id, extract_status="empty")
-            self.store.replace_chunks(doc_id, [], None, None)
+            fields["extract_status"] = "empty"
+            self.store.write_document(fields, [], None, None)
             self.state.docs_skipped += 1
             return "empty"
         title = derive_title(res.text, disp)
-        self.store.update_document(doc_id, title=title)
+        fields["title"] = title
         apply_title(chunks, title)
+        # embed BEFORE touching the document row: if this raises, the previous version stays
+        # intact and searchable, and the retry sees the old stat/hash so it re-extracts
         vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks)
         self.state.embed_ms += embed_ms
-        self.store.replace_chunks(doc_id, chunks, vectors, self.fingerprint)
+        doc_id = self.store.write_document(fields, chunks, vectors, self.fingerprint)
         self.state.docs_indexed += 1
         self.state.chunks_embedded += n_new
         self.state.chunks_reused += n_reused
@@ -654,12 +753,11 @@ class Indexer:
 
     def _write_status(self, path_norm: str, disp: str, info, status: str, method: str, error: str | None) -> None:
         now = time.time()
-        doc_id = self.store.upsert_document(
+        self.store.write_document(dict(
             path=path_norm, display_path=disp, root=root_for(disp, self.roots), filename=os.path.basename(disp),
-            extension=os.path.splitext(disp)[1].lower(), size=info.size, mtime=info.mtime, ctime=info.ctime,
+            extension=file_extension(disp), size=info.size, mtime=info.mtime, ctime=info.ctime,
             file_id=str(info.file_id), volume_serial=str(info.volume_serial), extract_status=status, extract_method=method,
-            extract_error=error, text_chars=0, indexed_at=now, last_seen=now, source="fs")
-        self.store.replace_chunks(doc_id, [], None, None)
+            extract_error=error, text_chars=0, indexed_at=now, last_seen=now, source="fs", missing_since=None, title=None), [], None, None)
 
     # ---------- reporting ----------
     def status(self) -> dict[str, Any]:

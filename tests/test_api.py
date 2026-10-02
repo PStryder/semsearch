@@ -8,7 +8,7 @@ from semsearch.api import create_app
 @pytest.fixture
 def client(built, cfg):
     app = create_app(cfg, state=built)
-    with TestClient(app) as c:
+    with TestClient(app, base_url="http://127.0.0.1") as c:
         yield c
 
 

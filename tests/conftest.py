@@ -69,3 +69,19 @@ def built(app):
     app.indexer.full_build()
     drain(app)
     return app
+
+
+@pytest.fixture
+def store_factory(tmp_path):
+    from semsearch.store.db import Store
+    made = []
+
+    def make(name="s.db", dim=4):
+        s = Store(tmp_path / name, vector_cache=True)
+        s.ensure_vectors(f"test:model:1:{dim}:cls", dim)
+        made.append(s)
+        return s
+
+    yield make
+    for s in made:
+        s.close()
