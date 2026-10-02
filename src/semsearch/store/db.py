@@ -234,6 +234,35 @@ class VectorCache:
             return [(int(self.ids[i]), float(sims[i])) for i in idx if not self.deleted[i]]
 
 
+class _Transaction:
+    """BEGIN/COMMIT with deferred side effects: the vector cache and the version counter are
+    updated only after a successful COMMIT; a rollback leaves both untouched."""
+
+    def __init__(self, store):
+        self.store = store
+        self.removed: list[int] = []
+        self.added: list[tuple[list[int], np.ndarray]] = []
+
+    def __enter__(self):
+        self.store.conn.execute("BEGIN")
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is not None:
+            self.store.conn.execute("ROLLBACK")
+            return False
+        self.store.conn.execute("COMMIT")
+        cache = self.store.cache
+        if cache is not None:
+            if self.removed:
+                cache.remove(self.removed)
+            for ids, vecs in self.added:
+                if len(ids):
+                    cache.add(ids, vecs)
+        self.store.version += 1
+        return False
+
+
 class StoreCorrupt(Exception):
     """The database file failed to open or its quick_check reported damage."""
 
@@ -423,46 +452,53 @@ class Store:
         # NTFS/ReFS file ids can exceed a signed 64-bit integer, so they are stored as text
         return self._r().execute("SELECT * FROM documents WHERE volume_serial=? AND file_id=?", (str(volume_serial), str(file_id))).fetchall()
 
+    # Consistency rules for every mutation below:
+    #   * SQL runs inside one transaction;
+    #   * the in-memory vector cache is touched ONLY after COMMIT (a rollback must leave it
+    #     exactly as SQLite is);
+    #   * self.version is bumped ONLY after COMMIT, so a search that ran against the
+    #     pre-commit snapshot is cached under the old version and dies with the commit.
+    def _tx(self):
+        return _Transaction(self)
+
     def upsert_document(self, **f: Any) -> int:
         cols = list(f.keys())
         with self.lock:
-            self.version += 1
             sql = (f"INSERT INTO documents({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "
                    f"ON CONFLICT(path) DO UPDATE SET {','.join(f'{c}=excluded.{c}' for c in cols if c != 'path')}")
             self.conn.execute(sql, [f[c] for c in cols])
-            return int(self.conn.execute("SELECT id FROM documents WHERE path=?", (f["path"],)).fetchone()[0])
+            doc_id = int(self.conn.execute("SELECT id FROM documents WHERE path=?", (f["path"],)).fetchone()[0])
+            self.version += 1
+            return doc_id
 
     def update_document(self, doc_id: int, **f: Any) -> None:
         if not f:
             return
         with self.lock:
+            self.conn.execute(f"UPDATE documents SET {','.join(f'{c}=?' for c in f)} WHERE id=?", [*f.values(), doc_id])
             if set(f) - {"last_seen"}:
                 self.version += 1
-            self.conn.execute(f"UPDATE documents SET {','.join(f'{c}=?' for c in f)} WHERE id=?", [*f.values(), doc_id])
 
     def remove_document(self, path_norm: str) -> bool:
         with self.lock:
             r = self.conn.execute("SELECT id FROM documents WHERE path=?", (path_norm,)).fetchone()
             if not r:
                 return False
-            self.version += 1
-            self._delete_doc_vectors(int(r[0]))
-            self.conn.execute("DELETE FROM documents WHERE id=?", (int(r[0]),))
+            self.remove_document_id(int(r[0]))
             return True
 
     def remove_document_id(self, doc_id: int) -> None:
-        with self.lock:
-            self.version += 1
-            self._delete_doc_vectors(doc_id)
+        with self.lock, self._tx() as tx:
+            tx.removed += self._delete_doc_vectors(doc_id)
             self.conn.execute("DELETE FROM documents WHERE id=?", (doc_id,))
 
     def tombstone_document(self, doc_id: int) -> None:
         """Mark a document as vanished. Chunks and vectors are kept for a grace period so that a
         rename/move indexed shortly afterwards can reclaim them via the NTFS file id."""
         with self.lock:
-            self.version += 1
             self.conn.execute("UPDATE documents SET extract_status='missing', missing_since=? WHERE id=? AND (extract_status != 'missing' OR missing_since IS NULL)",
                               (time.time(), doc_id))
+            self.version += 1
 
     def restore_document(self, doc_id: int, **f: Any) -> None:
         f = dict(f)
@@ -470,14 +506,24 @@ class Store:
         f["extract_status"] = "ok"
         self.update_document(doc_id, **f)
 
+    def quarantine_document(self, doc_id: int, status: str, error: str | None) -> None:
+        """Drop a document's text and vectors and record why (policy change on unchanged files)."""
+        with self.lock, self._tx() as tx:
+            tx.removed += self._delete_doc_vectors(doc_id)
+            self.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+            self.conn.execute("UPDATE documents SET extract_status=?, extract_error=?, text_chars=0, n_chunks=0, embedding_fingerprint=NULL WHERE id=?",
+                              (status, error, doc_id))
+
     def purge_missing(self, older_than_s: float) -> int:
         cutoff = time.time() - older_than_s
         with self.lock:
-            self.version += 1
             ids = [int(r[0]) for r in self.conn.execute("SELECT id FROM documents WHERE extract_status='missing' AND missing_since <= ?", (cutoff,))]
-            for i in ids:
-                self._delete_doc_vectors(i)
-                self.conn.execute("DELETE FROM documents WHERE id=?", (i,))
+            if not ids:
+                return 0
+            with self._tx() as tx:
+                for i in ids:
+                    tx.removed += self._delete_doc_vectors(i)
+                    self.conn.execute("DELETE FROM documents WHERE id=?", (i,))
         return len(ids)
 
     def iter_paths(self, root_norm: str | None = None) -> Iterator[tuple[int, str, float | None]]:
@@ -487,6 +533,12 @@ class Store:
             cur = self._r().execute("SELECT id, path, last_seen FROM documents")
         for r in cur:
             yield int(r[0]), r[1], r[2]
+
+    def iter_documents_with_text(self):
+        """(doc_id, display_path, concatenated chunk text) for every document that has chunks."""
+        for r in self._r().execute("SELECT id, display_path FROM documents WHERE n_chunks > 0 AND extract_status='ok'").fetchall():
+            parts = [c[0] for c in self._r().execute("SELECT text FROM chunks WHERE doc_id=? ORDER BY ordinal", (int(r[0]),))]
+            yield int(r[0]), r[1], "\n".join(parts)
 
     def documents_needing_embedding(self, fingerprint: str, limit: int = 1000, after_id: int = 0) -> list[sqlite3.Row]:
         return self._r().execute(
@@ -507,14 +559,15 @@ class Store:
         return int(self._r().execute("SELECT COUNT(*) FROM documents WHERE root=? AND extract_status != 'missing'", (root_norm,)).fetchone()[0])
 
     # ---- chunks & vectors ----
-    def _delete_doc_vectors(self, doc_id: int) -> None:
+    def _delete_doc_vectors(self, doc_id: int) -> list[int]:
+        """SQL only (inside the caller's transaction); returns the chunk ids whose vectors were
+        deleted so the caller can drop them from the cache after commit."""
         ids = [int(r[0]) for r in self.conn.execute("SELECT id FROM chunks WHERE doc_id=?", (doc_id,))]
         if ids and self._vec_table_exists():
             for i in range(0, len(ids), 500):
                 part = ids[i:i + 500]
                 self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
-            if self.cache is not None:
-                self.cache.remove(ids)
+        return ids
 
     def chunks_for_doc(self, doc_id: int) -> list[sqlite3.Row]:
         return self._r().execute("SELECT * FROM chunks WHERE doc_id=? ORDER BY ordinal", (doc_id,)).fetchall()
@@ -544,9 +597,9 @@ class Store:
                     out[h] = blob_to_vec(blob)
         return out
 
-    def _replace_chunks_inner(self, doc_id: int, chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> list[int]:
+    def _replace_chunks_inner(self, tx, doc_id: int, chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> list[int]:
         """Inside an open transaction on self.conn: swap a document's chunks and vectors."""
-        self._delete_doc_vectors(doc_id)
+        tx.removed += self._delete_doc_vectors(doc_id)
         self.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
         ids: list[int] = []
         for ch in chunks:
@@ -558,66 +611,40 @@ class Store:
             assert vectors.shape[0] == len(ids)
             for cid, v in zip(ids, vectors):
                 self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))
+            tx.added.append((ids, vectors))
         self.conn.execute("UPDATE documents SET n_chunks=?, embedding_fingerprint=? WHERE id=?",
                           (len(ids), fingerprint if vectors is not None else None, doc_id))
         return ids
 
     def replace_chunks(self, doc_id: int, chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> list[int]:
         """Atomically replace a document's chunks (and vectors). Returns new chunk ids."""
-        with self.lock:
-            self.version += 1
-            self.conn.execute("BEGIN")
-            try:
-                ids = self._replace_chunks_inner(doc_id, chunks, vectors, fingerprint)
-                self.conn.execute("COMMIT")
-            except Exception:
-                self.conn.execute("ROLLBACK")
-                raise
-            if vectors is not None and self.cache is not None and len(ids):
-                self.cache.add(ids, vectors)
-            return ids
+        with self.lock, self._tx() as tx:
+            return self._replace_chunks_inner(tx, doc_id, chunks, vectors, fingerprint)
 
     def write_document(self, fields: dict[str, Any], chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> int:
         """Document row + chunks + vectors in ONE transaction. Called only after extraction and
         embedding have succeeded, so a failure anywhere leaves the previous version of the
         document fully intact and searchable, and a retry sees the old stat/hash."""
         cols = list(fields.keys())
-        with self.lock:
-            self.version += 1
-            self.conn.execute("BEGIN")
-            try:
-                sql = (f"INSERT INTO documents({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "
-                       f"ON CONFLICT(path) DO UPDATE SET {','.join(f'{c}=excluded.{c}' for c in cols if c != 'path')}")
-                self.conn.execute(sql, [fields[c] for c in cols])
-                doc_id = int(self.conn.execute("SELECT id FROM documents WHERE path=?", (fields["path"],)).fetchone()[0])
-                ids = self._replace_chunks_inner(doc_id, chunks, vectors, fingerprint)
-                self.conn.execute("COMMIT")
-            except Exception:
-                self.conn.execute("ROLLBACK")
-                raise
-            if vectors is not None and self.cache is not None and len(ids):
-                self.cache.add(ids, vectors)
+        with self.lock, self._tx() as tx:
+            sql = (f"INSERT INTO documents({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "
+                   f"ON CONFLICT(path) DO UPDATE SET {','.join(f'{c}=excluded.{c}' for c in cols if c != 'path')}")
+            self.conn.execute(sql, [fields[c] for c in cols])
+            doc_id = int(self.conn.execute("SELECT id FROM documents WHERE path=?", (fields["path"],)).fetchone()[0])
+            self._replace_chunks_inner(tx, doc_id, chunks, vectors, fingerprint)
             return doc_id
 
     def set_vectors(self, chunk_ids: Sequence[int], vectors: np.ndarray, doc_id: int, fingerprint: str) -> None:
-        with self.lock:
-            self.version += 1
-            self.conn.execute("BEGIN")
-            try:
-                ids = [int(c) for c in chunk_ids]
-                for i in range(0, len(ids), 500):
-                    part = ids[i:i + 500]
-                    self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
-                for cid, v in zip(ids, vectors):
-                    self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))  # vec0 rejects OR REPLACE
-                self.conn.execute("UPDATE documents SET embedding_fingerprint=? WHERE id=?", (fingerprint, doc_id))
-                self.conn.execute("COMMIT")
-            except Exception:
-                self.conn.execute("ROLLBACK")
-                raise
-            if self.cache is not None:
-                self.cache.remove(chunk_ids)
-                self.cache.add(list(chunk_ids), vectors)
+        with self.lock, self._tx() as tx:
+            ids = [int(c) for c in chunk_ids]
+            for i in range(0, len(ids), 500):
+                part = ids[i:i + 500]
+                self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
+            for cid, v in zip(ids, vectors):
+                self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))  # vec0 rejects OR REPLACE
+            self.conn.execute("UPDATE documents SET embedding_fingerprint=? WHERE id=?", (fingerprint, doc_id))
+            tx.removed += ids
+            tx.added.append((ids, vectors))
 
     # ---- search primitives ----
     def knn(self, q: np.ndarray, k: int) -> list[tuple[int, float]]:

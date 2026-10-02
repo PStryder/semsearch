@@ -19,6 +19,7 @@ if (Get-Service $svc -ErrorAction SilentlyContinue) {
 Write-Host "==> removing binaries $InstallDir"
 Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue
 Remove-Item -Recurse -Force "$InstallDir.previous" -ErrorAction SilentlyContinue
+[Environment]::SetEnvironmentVariable("SEMSEARCH_CONFIG", $null, "Machine")
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 [Environment]::SetEnvironmentVariable("Path", (($machinePath -split ';' | Where-Object { $_ -and $_ -ne $InstallDir }) -join ';'), "Machine")
 if ($PurgeData) {

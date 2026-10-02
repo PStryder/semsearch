@@ -151,8 +151,10 @@ if ($Account -notmatch '^(LocalSystem|NT AUTHORITY\\|NT SERVICE\\)') {
 $ErrorActionPreference = "Continue"
 # icacls spelling of the account (sc.exe accepts 'LocalSystem'; ACLs need the SID-resolvable name)
 $aclAcct = switch -Regex ($Account) { '^LocalSystem$' { 'NT AUTHORITY\SYSTEM' } '^NT AUTHORITY\\LocalService$' { 'NT AUTHORITY\LOCAL SERVICE' } '^NT AUTHORITY\\NetworkService$' { 'NT AUTHORITY\NETWORK SERVICE' } default { $Account } }
-& $py -s -m semsearch.service install --account $acct --start delayed
+& $py -s -m semsearch.service install --account $acct --start delayed --config $cfgPath
 if ($LASTEXITCODE -ne 0) { Fail "service registration failed" }
+# the CLI finds a non-default DataDir through the machine environment (new shells)
+[Environment]::SetEnvironmentVariable("SEMSEARCH_CONFIG", $cfgPath, "Machine")
 # recovery: restart after failure, with back-off; reset the failure count after a day
 sc.exe failure $svc reset= 86400 actions= restart/5000/restart/30000/restart/120000 | Out-Null
 sc.exe failureflag $svc 1 | Out-Null

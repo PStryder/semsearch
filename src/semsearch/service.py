@@ -121,16 +121,18 @@ class ServiceRuntime:
     def stop(self, timeout_s: float | None = None) -> None:
         timeout_s = timeout_s if timeout_s is not None else self.cfg.service.shutdown_timeout_s
         t0 = time.time()
+        deadline = t0 + timeout_s
         log.info("service stopping (budget %.0fs)", timeout_s)
         if self.state is not None:
             try:
-                self.state.indexer.stop(timeout=max(5.0, timeout_s * 0.7))
+                # end-to-end deadline: the indexer gets 70% of the budget including a stuck extractor
+                self.state.indexer.stop(timeout=max(3.0, (deadline - time.time()) * 0.7))
             except Exception as e:  # noqa: BLE001
                 log.warning("indexer stop: %s", e)
         if self.server is not None:
             self.server.should_exit = True
             if self.server_thread is not None:
-                self.server_thread.join(max(2.0, timeout_s - (time.time() - t0)))
+                self.server_thread.join(max(1.0, deadline - time.time()))
         if self.state is not None:
             try:
                 self.state.close_without_indexer()
@@ -286,7 +288,7 @@ def _make_service_class():
                     servicemanager.LogErrorMsg("semsearch: another instance holds the service mutex; exiting")
                     self.ReportServiceStatus(win32service.SERVICE_STOPPED, win32ExitCode=winerror.ERROR_SERVICE_ALREADY_RUNNING)
                     return
-                cfg = load_config(str(machine_config_path()) if machine_config_path().is_file() else None)
+                cfg = load_config(CONFIG_PATH or (str(machine_config_path()) if machine_config_path().is_file() else None))
                 from .logging_setup import setup_logging
                 setup_logging(cfg.log_dir, cfg.log_level, to_stderr=False)
                 if cfg.service.event_log:
@@ -337,13 +339,26 @@ def _service_exists(name: str) -> bool:
         raise
 
 
-def install(account: str | None, start_type: str = "delayed", description: str | None = None) -> None:
-    """Register (or re-configure, when it already exists) the service. Idempotent."""
+CONFIG_PATH: str | None = None  # from --config on the service command line (set by the installer)
+
+
+def config_path_from_argv(argv: list[str]) -> str | None:
+    if "--config" in argv:
+        i = argv.index("--config")
+        if i + 1 < len(argv):
+            return argv[i + 1]
+    return None
+
+
+def install(account: str | None, start_type: str = "delayed", description: str | None = None, config_path: str | None = None) -> None:
+    """Register (or re-configure, when it already exists) the service. Idempotent. The
+    configuration file path is baked into the service command line so a custom data
+    directory does not depend on the default %ProgramData% discovery."""
     import win32service
     import win32serviceutil
     cls = _make_service_class()
     exe_name = cls._exe_name_
-    exe_args = cls._exe_args_
+    exe_args = cls._exe_args_ + (f' --config "{config_path}"' if config_path else "")
     st = {"auto": win32service.SERVICE_AUTO_START, "delayed": win32service.SERVICE_AUTO_START, "demand": win32service.SERVICE_DEMAND_START}[start_type]
     if _service_exists(cls._svc_name_):
         win32serviceutil.ChangeServiceConfig(None, cls._svc_name_, startType=st, exeName=exe_name, exeArgs=exe_args,
@@ -392,12 +407,14 @@ def main(argv: list[str] | None = None) -> int:
             account = argv[argv.index("--account") + 1]
         if "--start" in argv:
             start_type = argv[argv.index("--start") + 1]
-        install(account, start_type)
+        install(account, start_type, config_path=config_path_from_argv(argv))
         return 0
     if argv and argv[0] == "remove":
         remove()
         return 0
-    # no args: we are being started by the SCM
+    # started by the SCM: the command line may carry --config
+    global CONFIG_PATH
+    CONFIG_PATH = config_path_from_argv(argv)
     import servicemanager
     servicemanager.Initialize()
     servicemanager.PrepareToHostSingle(_make_service_class())
