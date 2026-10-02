@@ -117,37 +117,67 @@ def service_control(action: str, name: str = "SemSearch") -> int:
     try:
         import pywintypes
         import win32service
-        import win32serviceutil
     except ImportError:
         print("service control needs pywin32 (Windows only)", file=sys.stderr)
         return 2
     states = {1: "stopped", 2: "start pending", 3: "stop pending", 4: "running", 5: "continue pending", 6: "pause pending", 7: "paused"}
+
+    # pywin32's StartService/StopService helpers open the service with SERVICE_ALL_ACCESS, which an
+    # operator granted only start/stop/query rights does not have; open with exactly what we need.
+    def _open(rights):
+        hscm = win32service.OpenSCManager(None, None, win32service.SC_MANAGER_CONNECT)
+        return hscm, win32service.OpenService(hscm, name, rights)
+
+    def _wait(hs, target, timeout):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            st = win32service.QueryServiceStatus(hs)
+            if st[1] == target:
+                return True
+            time.sleep(0.5)
+        return False
+
+    def _stop(hs):
+        st = win32service.QueryServiceStatus(hs)
+        if st[1] != win32service.SERVICE_STOPPED:
+            win32service.ControlService(hs, win32service.SERVICE_CONTROL_STOP)
+        if not _wait(hs, win32service.SERVICE_STOPPED, 90):
+            raise RuntimeError("service did not stop within 90s")
+
+    def _start(hs):
+        win32service.StartService(hs, None)
+        if not _wait(hs, win32service.SERVICE_RUNNING, 240):
+            raise RuntimeError("service did not reach Running within 240s (see the log / event log)")
+
     try:
         if action == "status":
-            st = win32serviceutil.QueryServiceStatus(name)
+            hscm, hs = _open(win32service.SERVICE_QUERY_STATUS | win32service.SERVICE_QUERY_CONFIG)
+            st = win32service.QueryServiceStatus(hs)
             print(f"{name}: {states.get(st[1], st[1])}")
             try:
-                cfg = win32serviceutil.QueryServiceConfig(name) if hasattr(win32serviceutil, "QueryServiceConfig") else None
-            except Exception:  # noqa: BLE001
-                cfg = None
-            if cfg:
+                cfg = win32service.QueryServiceConfig(hs)
                 print("  binary:", cfg[3], " account:", cfg[7])
+            except pywintypes.error:
+                pass
             return 0 if st[1] == 4 else 1
+        rights = win32service.SERVICE_START | win32service.SERVICE_STOP | win32service.SERVICE_QUERY_STATUS
+        hscm, hs = _open(rights)
         if action == "start":
-            win32serviceutil.StartService(name)
-            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_RUNNING, 180)
+            _start(hs)
             print(f"{name}: running")
             return 0
         if action == "stop":
-            win32serviceutil.StopService(name)
-            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_STOPPED, 60)
+            _stop(hs)
             print(f"{name}: stopped")
             return 0
         if action == "restart":
-            win32serviceutil.RestartService(name, waitSeconds=60)
-            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_RUNNING, 180)
+            _stop(hs)
+            _start(hs)
             print(f"{name}: running")
             return 0
+    except RuntimeError as e:
+        print(f"{name}: {e}", file=sys.stderr)
+        return 1
     except pywintypes.error as e:
         if e.winerror == 5:
             print(f"access denied controlling {name}: run from an elevated prompt, or re-run the installer which grants "
@@ -324,8 +354,15 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
     argv = list(sys.argv[1:] if argv is None else argv)
-    if argv and argv[0] in SUBCOMMANDS:
-        return dispatch(argv)
+    # subcommand form, also when global options precede it: semsearch --config x.yaml service restart
+    for i, tok in enumerate(argv):
+        if tok.startswith("-"):
+            continue
+        if i > 0 and argv[i - 1] in ("--config", "--url"):
+            continue
+        if tok in SUBCOMMANDS:
+            return dispatch(argv)
+        break
     ap = argparse.ArgumentParser(prog="semsearch", description="Semantic search over local files (Windows Search sidecar)")
     ap.add_argument("query", nargs="?", help="search text; wildcards like *.pdf run a filename search")
     mode = ap.add_mutually_exclusive_group()

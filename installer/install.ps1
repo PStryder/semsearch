@@ -173,7 +173,9 @@ $roots = & $py -s -c "from semsearch.config import load_config; [print(str(r)) f
 foreach ($r in $roots) {
   # one inheritable ACE on the root directory (no /T: that would rewrite every file's ACL explicitly and take minutes on
   # large trees; the inheritable entry propagates on its own, and files that block inheritance are not indexable anyway)
-  if (Test-Path $r) { Step "granting $acct read access to root $r"; icacls $r /grant "${aclAcct}:(OI)(CI)RX" /Q | Out-Null } else { Write-Warning "root does not exist yet: $r" }
+  if (-not (Test-Path $r)) { Write-Warning "root does not exist yet: $r"; continue }
+  $have = (icacls $r | Select-String -SimpleMatch "$aclAcct`:") -ne $null
+  if ($have) { Step "read access for $acct on $r already present" } else { Step "granting $acct read access to root $r (propagation over a large tree can take minutes)"; icacls $r /grant "${aclAcct}:(OI)(CI)RX" /Q | Out-Null }
 }
 
 # ---- start and verify ----
