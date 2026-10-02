@@ -209,8 +209,10 @@ def dispatch(argv: list[str]) -> int:
     q.add_argument("--ext")
     q.add_argument("--root")
     q.add_argument("-v", "--verbose", action="store_true")
+    q.add_argument("--json", action="store_true", dest="json_sub", help="machine-readable output")  # accepted after the subcommand too
     for name in ("status", "health", "stats", "errors", "devices", "pause", "resume", "retry-failed", "version"):
-        sub.add_parser(name)
+        sp = sub.add_parser(name)
+        sp.add_argument("--json", action="store_true", dest="json_sub")
     r = sub.add_parser("reindex", help="re-index a path, or --full")
     r.add_argument("path", nargs="?")
     r.add_argument("--full", action="store_true")
@@ -226,6 +228,7 @@ def dispatch(argv: list[str]) -> int:
     cf = sub.add_parser("config")
     cf.add_argument("--validate", action="store_true")
     a = ap.parse_args(argv)
+    a.json = bool(a.json or getattr(a, "json_sub", False))
 
     try:
         cfg = load_config(a.config)
