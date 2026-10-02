@@ -7,3 +7,4 @@ _probe/
 *.db
 *.db-wal
 *.db-shm
+semsearch-pytest-review-*/
