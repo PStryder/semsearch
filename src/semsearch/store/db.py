@@ -137,11 +137,12 @@ class VectorCache:
     amortized O(rows added), not O(total). Reads and writes are serialized by a lock; the
     matrix product itself runs on a view of the live rows."""
 
-    def __init__(self, dim: int, capacity: int = 4096):
+    def __init__(self, dim: int, capacity: int = 4096, dtype: str = "float32"):
         self.dim = dim
         self.n = 0
+        self.dtype = np.float16 if dtype == "float16" else np.float32  # float16: half the RAM, slower matmul
         self.ids = np.zeros((capacity,), dtype=np.int64)
-        self.mat = np.zeros((capacity, dim), dtype=np.float32)
+        self.mat = np.zeros((capacity, dim), dtype=self.dtype)
         self.deleted = np.zeros((capacity,), dtype=bool)
         self.pos: dict[int, int] = {}
         self.n_deleted = 0
@@ -153,7 +154,7 @@ class VectorCache:
             return
         cap = max(need, len(self.ids) * 2, 4096)
         ids = np.zeros((cap,), dtype=np.int64)
-        mat = np.zeros((cap, self.dim), dtype=np.float32)
+        mat = np.zeros((cap, self.dim), dtype=self.dtype)
         deleted = np.zeros((cap,), dtype=bool)
         ids[: self.n] = self.ids[: self.n]
         mat[: self.n] = self.mat[: self.n]
@@ -170,12 +171,12 @@ class VectorCache:
             self.pos = {}
             self.n_deleted = 0
             self.ids = np.zeros((0,), dtype=np.int64)
-            self.mat = np.zeros((0, self.dim), dtype=np.float32)
+            self.mat = np.zeros((0, self.dim), dtype=self.dtype)
             self.deleted = np.zeros((0,), dtype=bool)
             self._ensure(len(ids))
             if ids:
                 self.ids[: len(ids)] = np.array(ids, dtype=np.int64)
-                self.mat[: len(ids)] = np.vstack(vecs).astype(np.float32)
+                self.mat[: len(ids)] = np.vstack(vecs).astype(self.dtype)
                 self.n = len(ids)
                 self.pos = {int(c): i for i, c in enumerate(ids)}
 
@@ -186,7 +187,7 @@ class VectorCache:
             self._ensure(len(ids))
             base = self.n
             self.ids[base: base + len(ids)] = np.asarray(ids, dtype=np.int64)
-            self.mat[base: base + len(ids)] = np.asarray(vecs, dtype=np.float32)
+            self.mat[base: base + len(ids)] = np.asarray(vecs, dtype=self.dtype)
             self.deleted[base: base + len(ids)] = False
             for i, c in enumerate(ids):
                 self.pos[int(c)] = base + i
@@ -225,7 +226,7 @@ class VectorCache:
             n = self.n
             if n == 0:
                 return []
-            sims = self.mat[:n] @ np.asarray(q, dtype=np.float32)
+            sims = (self.mat[:n] @ np.asarray(q, dtype=self.dtype)).astype(np.float32)
             if self.n_deleted:
                 sims = np.where(self.deleted[:n], -2.0, sims)
             k = min(k, n)
@@ -272,8 +273,10 @@ class StoreIncompatible(Exception):
 
 
 class Store:
-    def __init__(self, path: str | os.PathLike, vector_cache: bool = True, integrity_check: str = "quick", integrity_check_max_mb: int = 4096):
+    def __init__(self, path: str | os.PathLike, vector_cache: bool = True, integrity_check: str = "quick", integrity_check_max_mb: int = 4096,
+                 cache_dtype: str = "float32"):
         self.path = str(path)
+        self.cache_dtype = cache_dtype
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self.lock = threading.RLock()
         self._tls = threading.local()
@@ -284,6 +287,8 @@ class Store:
         try:
             self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
             self.conn.row_factory = sqlite3.Row
+            if not existed:
+                self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")  # must precede table creation; lets vacuum() reclaim in steps
             self.conn.execute("PRAGMA journal_mode=WAL")      # crash-consistent: committed transactions survive power loss
             self.conn.execute("PRAGMA synchronous=NORMAL")    # WAL + NORMAL: durable at checkpoint, no torn pages
             self.conn.execute("PRAGMA foreign_keys=ON")
@@ -372,7 +377,7 @@ class Store:
             self.cache = None
             return
         t0 = time.perf_counter()
-        self.cache = VectorCache(self.dim)
+        self.cache = VectorCache(self.dim, dtype=self.cache_dtype)
         rows = self.conn.execute("SELECT rowid, embedding FROM vec_chunks").fetchall()
         self.cache.load(((int(r[0]), r[1]) for r in rows))
         log.info("vector cache loaded: %d vectors in %.2fs", len(self.cache), time.perf_counter() - t0)
@@ -727,6 +732,10 @@ class Store:
             state = "failed" if r[0] >= max_attempts else "pending"
             self.conn.execute("UPDATE jobs SET state=?, error=?, updated_at=? WHERE id=?", (state, error[:1000], time.time(), job_id))
 
+    def failed_jobs(self, limit: int = 50) -> list[dict]:
+        rows = self._r().execute("SELECT path, op, attempts, error, updated_at FROM jobs WHERE state='failed' ORDER BY updated_at DESC LIMIT ?", (int(limit),)).fetchall()
+        return [dict(r) for r in rows]
+
     def requeue_running(self) -> int:
         with self.lock:
             cur = self.conn.execute("UPDATE jobs SET state='pending', updated_at=? WHERE state='running'", (time.time(),))
@@ -780,6 +789,39 @@ class Store:
             "errors": int(c.execute("SELECT COUNT(*) FROM errors").fetchone()[0]),
             "sqlite_vec": getattr(self, "vec_version", None),
         }
+
+    # ---- housekeeping ----
+    def vacuum(self, incremental_pages: int = 20000) -> dict[str, Any]:
+        """Return free pages to the OS. Databases created with auto_vacuum=INCREMENTAL release
+        pages in bounded steps; older ones get a one-time full VACUUM (which also enables
+        incremental mode) when the caller decides the service is idle."""
+        with self.lock:
+            mode = int(self.conn.execute("PRAGMA auto_vacuum").fetchone()[0])
+            free_before = int(self.conn.execute("PRAGMA freelist_count").fetchone()[0])
+            t0 = time.perf_counter()
+            if mode == 2:
+                self.conn.execute(f"PRAGMA incremental_vacuum({int(incremental_pages)})")
+                kind = "incremental"
+            else:
+                self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL")
+                self.conn.execute("VACUUM")
+                kind = "full"
+            free_after = int(self.conn.execute("PRAGMA freelist_count").fetchone()[0])
+        self.set_meta("last_vacuum_at", str(time.time()))
+        return {"kind": kind, "free_pages_before": free_before, "free_pages_after": free_after, "seconds": round(time.perf_counter() - t0, 2)}
+
+    def backup(self, dest: str | os.PathLike) -> dict[str, Any]:
+        """Consistent online copy of the index (SQLite backup API; safe while the service writes)."""
+        dest = str(dest)
+        os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+        t0 = time.perf_counter()
+        out = sqlite3.connect(dest)
+        try:
+            with self.lock:
+                self.conn.backup(out, pages=4096)
+        finally:
+            out.close()
+        return {"path": dest, "bytes": os.path.getsize(dest), "seconds": round(time.perf_counter() - t0, 2)}
 
     def wipe(self) -> None:
         """Delete all documents/chunks/vectors/jobs (keeps schema and model binding)."""

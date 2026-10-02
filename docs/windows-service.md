@@ -42,6 +42,7 @@ event log:
 | Crash recovery | `sc failure`: restart after 5 s, 30 s, 120 s; failure counter resets after a day. Jobs left `running` by a crash are requeued at the next start; an interrupted document write is invisible because document, chunks and vectors commit in one transaction |
 | Single instance | A global named mutex (`Global\SemSearch.Service`); a second instance logs to the event log and exits with `ERROR_SERVICE_ALREADY_RUNNING` |
 | Priority | Below-normal process priority (`indexing.low_priority`) so background embedding never competes with foreground work |
+| GPU courtesy | While other processes keep the bulk GPU busier than `indexing.bulk_yield_gpu_percent` (read from the `GPU Engine` performance counters, attributed by adapter LUID and PID), bulk work stays on the steady-state device; `semsearch status` reports it |
 | Status | `semsearch status` / `GET /status` report version, PID, queue, counters, resolved devices, Windows Search catalog state, schema version and corruption recovery |
 | Event log | Lifecycle events (start, ready, stop, configuration errors, failures) and every WARNING+ log record go to the Application log under source `SemSearch`; detailed logs rotate in `%ProgramData%\SemSearch\logs` |
 
@@ -136,7 +137,7 @@ locations you do not want to grant explicitly.
 | Location | Contents | Written by |
 |---|---|---|
 | `%ProgramFiles%\SemSearch\python\` | relocatable CPython (python-build-standalone) with semsearch and every dependency (`onnxruntime-directml`, `sqlite-vec`, pywin32, parsers) installed into its own `site-packages`; the service binary is its `pythonw.exe` | installer only |
-| `%ProgramFiles%\SemSearch\semsearch.cmd` | operator CLI wrapper (install dir is added to the machine PATH) | installer only |
+| `%ProgramFiles%\SemSearch\semsearch.exe`, `semsearch.cmd` | operator CLI (install dir is on the machine PATH); the `.exe` is pip's console launcher and works from cmd, PowerShell and Git Bash, re-executing the runtime with `-s` | installer only |
 | `%ProgramData%\SemSearch\semsearch.yaml` | configuration; written once, never overwritten by upgrades | installer (first time), operator |
 | `%ProgramData%\SemSearch\index\` | `semsearch.db` + WAL (documents, chunks, FTS5, vectors, job queue) | service |
 | `%ProgramData%\SemSearch\state\` | `admin.token` (gates maintenance API calls), `devices.json` (last accelerator resolution) | service |

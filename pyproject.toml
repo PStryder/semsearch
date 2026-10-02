@@ -30,6 +30,10 @@ dependencies = [
 cpu = ["onnxruntime>=1.18"]
 dml = ["onnxruntime-directml>=1.18"]
 gpu = ["onnxruntime-gpu>=1.18"]
+# Windows OCR for image-only PDFs (WinRT projection; no third-party OCR runtime)
+ocr = ["winrt-runtime>=2.0", "winrt-Windows.Data.Pdf>=2.0", "winrt-Windows.Media.Ocr>=2.0", "winrt-Windows.Graphics.Imaging>=2.0",
+       "winrt-Windows.Storage>=2.0", "winrt-Windows.Storage.Streams>=2.0", "winrt-Windows.Foundation>=2.0",
+       "winrt-Windows.Foundation.Collections>=2.0", "winrt-Windows.Globalization>=2.0"]
 st = ["sentence-transformers>=3.0"]
 dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
 

@@ -91,6 +91,12 @@ def build_default_registry(cfg: Config) -> ExtractorRegistry:
     for e in text_exts:
         chains[e] = [text]
     chains[".pdf"] = [pdf] + ([ifilter] if ifilter else [])
+    if cfg.indexing.ocr_scanned_pdfs and sys.platform == "win32":
+        from .ocr import WindowsOcrPdfExtractor, available as ocr_available
+        if ocr_available():
+            chains[".pdf"].append(WindowsOcrPdfExtractor(max_pages=cfg.indexing.ocr_max_pages, max_chars=cfg.indexing.max_text_chars))
+        else:
+            log.warning("indexing.ocr_scanned_pdfs is on but the pywinrt OCR packages are missing (install the `ocr` extra)")
     chains[".docx"] = ([ifilter] if ifilter else []) + [docx]
     chains[".pptx"] = ([ifilter] if ifilter else []) + [pptx]
     chains[".xlsx"] = ([ifilter] if ifilter else []) + [xlsx]

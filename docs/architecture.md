@@ -40,7 +40,8 @@ semantic subsystem is testable with a deterministic embedding provider on any pl
 | `inventory/catalog.py` | Read-only COM access to `ISearchCatalogManager` for `/status` (catalog state, item counts, URL being indexed) |
 | `inventory/filesystem.py` | `os.scandir` crawl that never follows reparse points or leaves the roots |
 | `watcher.py` | `ReadDirectoryChangesW` per root; coalesced add/modify/delete/rename events |
-| `extract/` | `ExtractorRegistry` with an ordered chain per extension; `TextExtractor` (encoding detection, binary detection), `PdfExtractor` (pypdf), `IFilterExtractor` (Windows filters via `LoadIFilter` or `IInitializeWithStream`), Office fallbacks, `IsolatedExtractor` (child process + timeout for native code) |
+| `extract/` | `ExtractorRegistry` with an ordered chain per extension; `TextExtractor` (encoding detection, binary detection), `PdfExtractor` (pypdf), `IFilterExtractor` (Windows filters via `LoadIFilter` or `IInitializeWithStream`), Office fallbacks, `WindowsOcrPdfExtractor` (image-only PDFs via Windows.Data.Pdf + Windows.Media.Ocr, optional), `IsolatedExtractor` (child process + timeout for native code) |
+| `gpu_monitor.py` | GPU courtesy: per-adapter utilization by other processes from the `GPU Engine` performance counters |
 | `chunking.py` | Heading/paragraph/definition-aware packing with overlap and character offsets |
 | `embed/` | `EmbeddingProvider` protocol; `OnnxProvider` (default), `SentenceTransformersProvider` (optional), `HashingProvider` (tests) |
 | `store/db.py` | SQLite schema, FTS5 external-content index with triggers, `vec0` vector table, in-memory vector cache, job queue, error log, model binding |

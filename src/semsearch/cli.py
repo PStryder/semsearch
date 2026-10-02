@@ -104,7 +104,19 @@ def _print_status(s: dict) -> None:
         print("  last error:", ix["last_error"])
     ws = s.get("windows_search", {})
     if ws.get("available"):
-        print("Windows Search:", ws["status"], "items:", ws["items"], "to index:", ws["to_index"], "indexing:", ws.get("url_being_indexed") or "-")
+        pend = ws["to_index"]
+        backlog = sum(int(v) for v in pend.values()) if isinstance(pend, dict) else pend
+        print(f"Windows Search (its own catalog, not semsearch's queue): {ws['status']}, {ws['items']} items, "
+              f"Windows' own crawl backlog: {backlog}, now indexing: {ws.get('url_being_indexed') or '-'}")
+        rs = ws.get("relevance_signal") or {}
+        if rs and not rs.get("active", True):
+            print("  Windows relevance signal paused (no usable hits recently)")
+    if ix.get("failed_jobs"):
+        print("Failed jobs (retry with: semsearch retry-failed):")
+        for j in ix["failed_jobs"][:10]:
+            print(f"  {j['op']:<7} {j['path']}  attempts={j['attempts']}  {(j.get('error') or '')[:120]}")
+    if ix.get("gpu_yielding"):
+        print("GPU courtesy: bulk GPU is busy with other processes; embedding on the steady-state device")
     else:
         print("Windows Search: unavailable", ws.get("error", ""))
     st = s["store"]
@@ -213,6 +225,12 @@ def dispatch(argv: list[str]) -> int:
     for name in ("status", "health", "stats", "errors", "devices", "pause", "resume", "retry-failed", "version"):
         sp = sub.add_parser(name)
         sp.add_argument("--json", action="store_true", dest="json_sub")
+        if name == "errors":
+            sp.add_argument("--stage", choices=["extract", "policy", "job", "reconcile"], help="only this stage (policy = refused by exclusion/secret screening)")
+            sp.add_argument("-n", type=int, default=100)
+    bk = sub.add_parser("backup", help="consistent online copy of the index database")
+    bk.add_argument("dest", help="destination file, e.g. D:\\backups\\semsearch-2026-10-02.db")
+    bk.add_argument("--direct", action="store_true", help="copy from the database file directly instead of asking the service (works while the service is stopped)")
     r = sub.add_parser("reindex", help="re-index a path, or --full")
     r.add_argument("path", nargs="?")
     r.add_argument("--full", action="store_true")
@@ -295,9 +313,40 @@ def dispatch(argv: list[str]) -> int:
                 print(json.dumps(c.get("/stats").json(), indent=2))
                 return 0
             if a.cmd == "errors":
-                for e in c.get("/errors").json()["errors"]:
+                params = {"limit": a.n}
+                if a.stage:
+                    params["stage"] = a.stage
+                body = c.get("/errors", params=params).json()
+                if a.json:
+                    print(json.dumps(body, indent=2))
+                    return 0
+                for e in body["errors"]:
                     print(_fmt_ts(e["at"]), e["stage"], e["path"], "-", (e["message"] or "")[:200])
+                if body.get("failed_jobs") and not a.stage:
+                    print("\nFailed jobs (semsearch retry-failed to re-queue):")
+                    for j in body["failed_jobs"]:
+                        print(f"  {j['op']:<7} {j['path']}  attempts={j['attempts']}  {(j.get('error') or '')[:160]}")
                 return 0
+            if a.cmd == "backup":
+                dest = os.path.abspath(a.dest)
+                if a.direct:
+                    import sqlite3
+                    src = sqlite3.connect(f"file:{cfg.db_path}?mode=ro", uri=True)
+                    try:
+                        out = sqlite3.connect(dest)
+                        src.backup(out)
+                        out.close()
+                    finally:
+                        src.close()
+                    print(json.dumps({"path": dest, "bytes": os.path.getsize(dest), "mode": "direct"}))
+                    return 0
+                tok = _admin_token(cfg)
+                if tok is None:
+                    print("backup via the service needs the admin token; or use --direct", file=sys.stderr)
+                    return 3
+                r = c.post("/backup", json={"path": dest}, headers={"x-semsearch-token": tok})
+                print(json.dumps(r.json()))
+                return 0 if r.status_code < 400 else 1
             if a.cmd == "query":
                 mode = "literal" if a.literal else "semantic" if a.semantic else "hybrid" if a.hybrid else None
                 body = {"query": " ".join(a.text), "mode": mode, "limit": a.limit}
@@ -349,7 +398,19 @@ def dispatch(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------- legacy flag interface
+def _ensure_isolated_interpreter() -> None:
+    """The installed `semsearch.exe` launcher starts the runtime without -s, so a user's
+    %APPDATA%\\Python site-packages could shadow the runtime's. Re-exec with -s once."""
+    if sys.flags.no_user_site or os.environ.get("SEMSEARCH_REEXEC") == "1" or not getattr(sys, "frozen", False) and "site-packages" not in os.path.dirname(__file__).lower():
+        return
+    import subprocess
+    env = dict(os.environ, SEMSEARCH_REEXEC="1")
+    raise SystemExit(subprocess.call([sys.executable, "-s", "-m", "semsearch.cli", *sys.argv[1:]], env=env))
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        _ensure_isolated_interpreter()
     # Windows consoles often default to cp1252; excerpts contain arbitrary Unicode
     for stream in (sys.stdout, sys.stderr):
         try:

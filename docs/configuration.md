@@ -89,6 +89,11 @@ indexing:
   reconcile_min_fraction: 0.5           # skip tombstoning when an enumeration returns fewer than this share of known files
   startup_reconcile_delay_s: 600        # first full reconcile this long after start
   low_priority: true                    # below-normal process priority
+  secret_scan_allow: []                 # path globs exempt from secret screening (e.g. "**/docs/examples/**")
+  ocr_scanned_pdfs: false               # OCR image-only PDFs with the Windows OCR engine (needs `uv sync --extra ocr`)
+  ocr_max_pages: 50
+  bulk_yield_gpu_percent: 40            # stay off the bulk GPU while other processes keep it above this utilization
+  vacuum_interval_s: 86400              # idle-time reclaim of free database pages
 
 service:                                # Windows service host (docs/windows-service.md)
   name: SemSearch
@@ -107,8 +112,11 @@ retrieval:
   candidate_chunks: 300                 # top-k chunks pulled from each signal before fusion
   candidate_docs: 100
   use_windows_rank: true
+  windows_rank_disable_after: 20        # pause the Windows FREETEXT signal for an hour after this many empty answers
+  collapse_duplicates: true             # identical content shows once, other copies listed under `duplicates`
   excerpt_chars: 420
   vector_cache: true                    # keep vectors in RAM for fast queries
+  vector_cache_dtype: float32           # float16 halves RAM (≈0.75 KB/chunk) at some query-latency cost
 
 log_level: INFO
 ```
@@ -124,6 +132,11 @@ log_level: INFO
 
 Any HF repo that ships `onnx/model.onnx` and `tokenizer.json` works. For a fully offline
 install copy those two files into a directory and set `model` to that path.
+
+The default model is English-only. For mixed-language material use a multilingual model, for
+example `intfloat/multilingual-e5-small` (384 dims, `pooling: mean`, `query_prefix: "query: "`,
+`document_prefix: "passage: "`) or `BAAI/bge-m3` (1024 dims, `pooling: cls`, no prefixes;
+about 2 GB). Changing the model re-embeds the index from stored chunk text in the background.
 
 Changing `model`, `pooling` or `revision` changes the fingerprint; existing vectors are dropped
 and re-embedded from stored chunk text in the background (`on_model_change: reembed`).

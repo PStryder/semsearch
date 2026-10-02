@@ -73,6 +73,21 @@ embedded (chunk-text hash lookup).
 
 Deleting `<data_dir>\semsearch.db` (with the server stopped) is equivalent to `--wipe`.
 
+## Backup and housekeeping
+
+```
+semsearch backup D:\backups\semsearch-2026-10-02.db      # consistent online copy via the running service
+semsearch backup D:\backups\semsearch.db --direct        # copy straight from the database file (service may be stopped)
+```
+
+Both use SQLite's backup API, so the copy is consistent even while the indexer writes. Restore
+by stopping the service, replacing `<index_dir>\semsearch.db` (and deleting any `-wal`/`-shm`),
+and starting it; the next incremental pass picks up anything that changed since the copy.
+
+The database reclaims free pages on its own once per `indexing.vacuum_interval_s` when the
+queue is idle (incremental vacuum on databases created by this version; a one-time full VACUUM
+the first time on older databases).
+
 ## Monitoring
 
 - `semsearch --status`: indexer state, queue, counters, throughput, Windows Search catalog
@@ -110,6 +125,17 @@ service (`Start-Service WSearch`).
 
 **Windows Search is `paused` / `recovering`** — the indexer itself is throttled; semsearch
 keeps working, only the GatherTime delta source lags.
+
+**A file was refused as a suspected secret but is harmless** — `semsearch errors --stage policy`
+lists the matched pattern; add its folder to `indexing.secret_scan_allow` and re-index it.
+
+**Scanned PDFs show as `empty`** — they have no text layer. Enable `indexing.ocr_scanned_pdfs`
+(after `uv sync --extra ocr`, or a release built with it) to OCR them with the Windows OCR
+engine; the first reindex of those files takes seconds per page.
+
+**Same document appears once but you know there are copies** — that is the duplicate collapse:
+each copy is still indexed and listed under `duplicates` on the hit. Set
+`retrieval.collapse_duplicates: false` to show every copy as its own result.
 
 **Changes not picked up** — `--status` shows `watcher: false` if the watcher failed to start
 (for example a root on a network share); the incremental pass still runs every

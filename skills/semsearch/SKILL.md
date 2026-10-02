@@ -49,6 +49,7 @@ Try two phrasings if the first top-5 looks wrong; queries cost 10 to 300 ms.
 - `scores`: `semantic` (cosine of the best chunk), `lexical` (normalized BM25), `filename`, `semantic_rank`, `lexical_rank`
 - `excerpt`: the best-matching chunk, windowed around the first matching term
 - `chunk_ordinal`: which chunk of the file matched (chunks are ~1400 characters in document order)
+- `duplicates`: other paths holding byte-identical content (shown once; every copy is still indexed)
 - `why`: human-readable reasons
 
 Guidance:
