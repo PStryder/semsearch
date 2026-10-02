@@ -25,7 +25,7 @@ DEFAULT_TEXT_EXTENSIONS = [
     ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".html", ".htm",
     ".css", ".scss", ".tex", ".bib", ".gitignore", ".dockerfile",  # dot-names count as their own extension
 ]
-DEFAULT_DOC_EXTENSIONS = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".rtf"]
+DEFAULT_DOC_EXTENSIONS = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".rtf", ".msg", ".eml"]
 
 DEFAULT_EXCLUDES = [
     "**/.git/**", "**/.hg/**", "**/.svn/**",
@@ -34,6 +34,8 @@ DEFAULT_EXCLUDES = [
     "**/.idea/**", "**/.vs/**", "**/bin/**", "**/obj/**", "**/target/**", "**/.cache/**",
     "**/site-packages/**", "**/*.min.js", "**/*.min.css", "**/*.lock", "**/package-lock.json",
     "**/$RECYCLE.BIN/**", "**/System Volume Information/**",
+    # semsearch's own evaluation corpus and indexes (copies of the user's files)
+    "**/semsearch/eval/corpus/**", "**/semsearch/eval/index_*/**", "**/semsearch/dist/**",
     # credential-looking locations (path globs) ...
     "**/.ssh/**", "**/.aws/**", "**/.azure/**", "**/.gnupg/**", "**/.kube/**", "**/.docker/config.json",
     # ... and credential-looking FILE names (bare patterns match the file name only, never a folder name);
@@ -117,6 +119,11 @@ class IndexingConfig(BaseModel):
     reconcile_min_fraction: float = 0.5   # skip tombstoning when an enumeration returns fewer than this fraction of known docs
     startup_reconcile_delay_s: float = 600.0  # first full reconcile this long after start (incremental runs immediately)
     low_priority: bool = True             # run the process at below-normal CPU priority (background work)
+    secret_scan_allow: list[str] = Field(default_factory=list)  # path globs exempt from secret screening (documented examples etc.)
+    ocr_scanned_pdfs: bool = False        # OCR image-only PDFs with the Windows OCR engine (needs the `ocr` extra; slow)
+    ocr_max_pages: int = 50
+    bulk_yield_gpu_percent: float = 40.0  # do not use the bulk GPU while other processes keep it busier than this
+    vacuum_interval_s: float = 86400.0    # reclaim free pages from the index database this often (idle time)
 
 
 class ServiceConfig(BaseModel):
@@ -138,8 +145,11 @@ class RetrievalConfig(BaseModel):
     candidate_chunks: int = 300
     candidate_docs: int = 100
     use_windows_rank: bool = True
+    windows_rank_disable_after: int = 20  # consecutive empty FREETEXT answers before it is paused for an hour
+    collapse_duplicates: bool = True      # one hit per identical content; other copies listed on it
     excerpt_chars: int = 420
     vector_cache: bool = True
+    vector_cache_dtype: Literal["float32", "float16"] = "float32"  # float16 halves RAM at some query latency cost
 
 
 class Config(BaseModel):

@@ -59,7 +59,7 @@ def open_store_with_recovery(cfg: Config) -> tuple[Store, dict[str, Any]]:
     os.makedirs(path.parent, exist_ok=True)
     info: dict[str, Any] = {"path": str(path), "recovered_from_corruption": False}
     try:
-        store = Store(path, vector_cache=cfg.retrieval.vector_cache,
+        store = Store(path, vector_cache=cfg.retrieval.vector_cache, cache_dtype=cfg.retrieval.vector_cache_dtype,
                       integrity_check=cfg.service.integrity_check, integrity_check_max_mb=cfg.service.integrity_check_max_mb)
     except StoreIncompatible:
         raise
@@ -70,7 +70,7 @@ def open_store_with_recovery(cfg: Config) -> tuple[Store, dict[str, Any]]:
             p = str(path) + suffix
             if os.path.exists(p):
                 shutil.move(p, f"{p}.corrupt-{stamp}")
-        store = Store(path, vector_cache=cfg.retrieval.vector_cache, integrity_check="none")
+        store = Store(path, vector_cache=cfg.retrieval.vector_cache, cache_dtype=cfg.retrieval.vector_cache_dtype, integrity_check="none")
         store.set_meta("recovered_from_corruption_at", str(time.time()))
         info["recovered_from_corruption"] = True
     info["schema_version"] = int(store.get_meta("schema_version") or SCHEMA_VERSION)
@@ -136,6 +136,16 @@ class AppState:
             extractor = IsolatedExtractor(cfg, self.registry, timeout_s=cfg.indexing.extract_timeout_s)
         self.extractor = extractor
         self.indexer = Indexer(cfg, self.store, extractor, self.embedder, windows_inventory=self.windows, fs_inventory=self.fs)
+        # GPU courtesy needs the bulk adapter's LUID (per boot; from this start's resolution)
+        try:
+            bulk = self.device_resolution.get("roles", {}).get("bulk_device", {}).get("resolved", "")
+            if bulk.startswith("dml:"):
+                ordinal = int(bulk.split(":")[1])
+                for a in self.device_resolution.get("adapters", []):
+                    if a["ordinal"] == ordinal:
+                        self.indexer.bulk_luid = a["luid"]
+        except Exception:  # noqa: BLE001
+            pass
         self.retriever = Retriever(cfg, self.store, self.embedder, windows=self.windows)
         if start_indexer:
             self.indexer.start()

@@ -68,7 +68,11 @@ $py = (Get-ChildItem "$InstallDir\python\cpython-*\python.exe" | Select-Object -
 # -s everywhere: the runtime must never see a user's %APPDATA%\Python site-packages (the service account has none)
 & $py -s "$InstallDir\verify_runtime.py"
 if ($LASTEXITCODE -ne 0) { Fail "installed runtime failed verification" }
-# a 'semsearch' command for operators: wrapper in the install dir (added to the machine PATH)
+# a 'semsearch' command for operators (install dir is on the machine PATH): the real console
+# launcher pip generated (works from cmd, PowerShell and Git Bash alike; it re-executes with -s)
+# plus the .cmd wrapper for shells that prefer it
+$exe = Join-Path (Split-Path $py) "Scripts\semsearch.exe"
+if (Test-Path $exe) { Copy-Item $exe "$InstallDir\semsearch.exe" -Force }
 Set-Content "$InstallDir\semsearch.cmd" "@echo off`r`n`"$py`" -s -m semsearch.cli %*" -Encoding ascii
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 if ($machinePath -notlike "*$InstallDir*") { [Environment]::SetEnvironmentVariable("Path", "$machinePath;$InstallDir", "Machine") }

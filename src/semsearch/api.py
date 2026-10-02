@@ -121,8 +121,12 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     @app.get("/status")
     def status():
         s = st()
+        ws = catalog_status() if s.windows is not None else {"available": False}
+        if ws.get("available"):
+            ws["note"] = "Windows Search's own catalog and crawl backlog (not semsearch's queue)"
+            ws["relevance_signal"] = s.retriever.windows_rank_state()
         return {"version": __version__,
-                "indexer": s.indexer.status(), "windows_search": catalog_status() if s.windows is not None else {"available": False},
+                "indexer": s.indexer.status(), "windows_search": ws,
                 "store": {"path": str(cfg.db_path), "fingerprint": s.store.fingerprint, "dim": s.store.dim,
                           "schema_version": getattr(s, "store_info", {}).get("schema_version"),
                           "recovered_from_corruption": getattr(s, "store_info", {}).get("recovered_from_corruption", False)},
@@ -139,8 +143,17 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         return d
 
     @app.get("/errors")
-    def errors(limit: int = Query(100, ge=1, le=1000)):
-        return {"errors": st().store.recent_errors(limit)}
+    def errors(limit: int = Query(100, ge=1, le=1000), stage: str | None = None):
+        s = st()
+        errs = s.store.recent_errors(limit if not stage else limit * 10)
+        if stage:
+            errs = [e for e in errs if e["stage"] == stage][:limit]
+        return {"errors": errs, "failed_jobs": s.store.failed_jobs(50)}
+
+    @app.post("/backup")
+    def backup(req: PathRequest, _: None = Depends(require_admin)):
+        """Consistent online copy of the index to a path the service account can write."""
+        return st().store.backup(req.path)
 
     @app.post("/index/path")
     def index_path(req: PathRequest, _: None = Depends(require_admin)):

@@ -99,6 +99,7 @@ class IndexerState:
     recent: deque = field(default_factory=lambda: deque(maxlen=500))  # (ts, docs, chunks)
     sources: dict[str, str] = field(default_factory=dict)
     last_error: str | None = None
+    gpu_yielding: bool = False
 
     def throughput(self, window_s: float = 300.0) -> dict[str, float]:
         now = time.time()
@@ -132,6 +133,7 @@ class Indexer:
         self._watcher = None
         self._lock = threading.Lock()
         self.fingerprint = embedder.fingerprint
+        self.bulk_luid: str | None = None  # set by AppState from the device resolution (bulk adapter)
 
     # ---------- lifecycle ----------
     def start(self) -> None:
@@ -531,10 +533,26 @@ class Indexer:
                 if now - last_rec >= self.cfg.indexing.reconcile_interval_s and not self.state.paused:
                     self.reconcile()
                     last_rec = now
+                self._maybe_vacuum(now)
             except Exception as e:
                 log.exception("scheduler error: %s", e)
                 self.state.last_error = f"scheduler: {e}"
             self._stop.wait(min(5.0, self.cfg.indexing.poll_interval_s))
+
+    def _maybe_vacuum(self, now: float) -> None:
+        """Idle-time housekeeping: reclaim free pages once per vacuum_interval_s when the queue is empty."""
+        interval = self.cfg.indexing.vacuum_interval_s
+        if interval <= 0 or self.store.queue_stats()["pending"] > 0 or self.state.current_path is not None:
+            return
+        last = float(self.store.get_meta("last_vacuum_at") or 0.0)
+        if now - last < interval:
+            return
+        try:
+            r = self.store.vacuum()
+            log.info("index vacuum (%s): free pages %d -> %d in %.1fs", r["kind"], r["free_pages_before"], r["free_pages_after"], r["seconds"])
+        except Exception as e:
+            log.warning("vacuum failed: %s", e)
+            self.store.set_meta("last_vacuum_at", str(now))
 
     def _work_loop(self) -> None:
         idle_wait = 1.0
@@ -550,7 +568,8 @@ class Indexer:
                 self._wake.clear()
                 continue
             try:
-                self._set_bulk(self.state.full_build_in_progress or self.store.queue_stats()["pending"] > self.cfg.embedding.bulk_threshold)
+                want_bulk = self.state.full_build_in_progress or self.store.queue_stats()["pending"] > self.cfg.embedding.bulk_threshold
+                self._set_bulk(want_bulk and not self._bulk_gpu_busy_elsewhere())
                 self.process_job(job)
             except Exception as e:
                 log.exception("job %s failed: %s", job["path"], e)
@@ -560,6 +579,28 @@ class Indexer:
                 self.state.last_error = f"{job['path']}: {e}"
 
     # ---------- job processing ----------
+    _gpu_monitor = None
+    _gpu_yielding = False
+
+    def _bulk_gpu_busy_elsewhere(self) -> bool:
+        """GPU courtesy: stay off the bulk GPU while other processes keep it busier than
+        `indexing.bulk_yield_gpu_percent` (games, training runs). The bulk device's LUID comes
+        from the resolution report; the check is sampled at most every few seconds."""
+        thr = self.cfg.indexing.bulk_yield_gpu_percent
+        luid = self.bulk_luid
+        if thr <= 0 or not luid:
+            return False
+        if self._gpu_monitor is None:
+            from .gpu_monitor import GpuMonitor
+            self._gpu_monitor = GpuMonitor()
+        busy = self._gpu_monitor.others_busy_percent(luid)
+        yielding = busy >= thr
+        if yielding != self._gpu_yielding:
+            self._gpu_yielding = yielding
+            log.info("bulk GPU %s by other processes (%.0f%%): %s", "busy" if yielding else "free again", busy, "using the steady-state device" if yielding else "bulk device available")
+        self.state.gpu_yielding = yielding
+        return yielding
+
     def _set_bulk(self, on: bool) -> None:
         """Switch the embedder between its steady-state and bulk devices (no-op for providers
         without the capability)."""
@@ -633,6 +674,8 @@ class Indexer:
         if want == "on":
             log.info("secret screening enabled: scanning stored text of indexed documents")
             for doc_id, disp, text in self.store.iter_documents_with_text():
+                if is_excluded(disp, self.cfg.indexing.secret_scan_allow):
+                    continue
                 hit = suspected_secret(text)
                 if hit:
                     self.store.quarantine_document(doc_id, "secret_suspected", f"credential pattern: {hit}")
@@ -739,7 +782,7 @@ class Indexer:
             if existing is not None:
                 self.store.tombstone_document(int(existing["id"]))
             return "missing"
-        if res.ok and self.cfg.indexing.skip_suspected_secrets:
+        if res.ok and self.cfg.indexing.skip_suspected_secrets and not is_excluded(disp, self.cfg.indexing.secret_scan_allow):
             hit = suspected_secret(res.text)
             if hit:
                 res.status, res.error, res.text = "secret_suspected", f"credential pattern: {hit}", ""
@@ -845,6 +888,8 @@ class Indexer:
             "watcher": bool(self._watcher and self._watcher.is_alive()),
             "extractor_restarts": getattr(self.extractor, "restarts", 0),
             "last_error": s.last_error,
+            "failed_jobs": self.store.failed_jobs(20),
+            "gpu_yielding": s.gpu_yielding,
             "embedding": {"fingerprint": self.fingerprint, "dim": self.embedder.dim, "device": self.embedder.device,
                           "devices": getattr(self.embedder, "device_summary", lambda: {"steady": self.embedder.device})(),
                           "bulk_mode": getattr(self.embedder, "bulk_mode", False)},

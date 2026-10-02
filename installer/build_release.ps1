@@ -6,7 +6,7 @@
 # Run from the repo root (unelevated). Requires uv.
 param(
   [string]$Python = "3.12",
-  [string]$Extra = "dml",            # dml | cpu | gpu  (exactly one ONNX Runtime build)
+  [string]$Extra = "dml,ocr",        # one of dml | cpu | gpu (exactly one ONNX Runtime build), plus optional ocr
   [string]$OutRoot = "dist"
 )
 $ErrorActionPreference = "Stop"

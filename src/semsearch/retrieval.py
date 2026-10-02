@@ -57,6 +57,27 @@ class Retriever:
         self.roots = cfg.normalized_roots()
         self._cache: OrderedDict[tuple, dict[str, Any]] = OrderedDict()
         self._cache_size = cache_size
+        self._windows_empty_streak = 0
+        self._windows_paused_until = 0.0
+
+    # ---------- adaptive Windows relevance ----------
+    def _windows_rank_active(self) -> bool:
+        return time.time() >= self._windows_paused_until
+
+    def _note_windows_rank(self, matched: int) -> None:
+        if matched:
+            self._windows_empty_streak = 0
+            return
+        self._windows_empty_streak += 1
+        n = self.cfg.retrieval.windows_rank_disable_after
+        if n > 0 and self._windows_empty_streak >= n:
+            self._windows_paused_until = time.time() + 3600.0
+            self._windows_empty_streak = 0
+            log.info("Windows Search relevance paused for an hour: %d consecutive queries without a usable hit", n)
+
+    def windows_rank_state(self) -> dict[str, Any]:
+        return {"active": self._windows_rank_active(), "empty_streak": self._windows_empty_streak,
+                "paused_until": self._windows_paused_until or None}
 
     # ---------- public ----------
     def search(self, query: str, mode: str | None = None, limit: int = 20, roots: list[str] | None = None,
@@ -122,9 +143,28 @@ class Retriever:
         for c in kept:
             scored.append((self._final_score(c, mode, norms), c))
         scored.sort(key=lambda x: (-x[0], x[1].doc_id))
+        duplicates: dict[int, list[str]] = {}
+        if self.cfg.retrieval.collapse_duplicates:
+            # identical content (same hash) appears once; the other copies are listed on the surviving hit
+            first_for_hash: dict[str, int] = {}
+            kept_scored = []
+            for score, c in scored:
+                h = docs[c.doc_id]["content_hash"]
+                if h and h in first_for_hash:
+                    duplicates.setdefault(first_for_hash[h], []).append(docs[c.doc_id]["display_path"])
+                    continue
+                if h:
+                    first_for_hash[h] = c.doc_id
+                kept_scored.append((score, c))
+            scored = kept_scored
         hits = [self._hit(score, c, docs[c.doc_id], mode) for score, c in scored[:limit]]
+        out_hits = []
+        for h in hits:
+            d = h.to_dict()
+            d["duplicates"] = duplicates.get(h.doc_id, [])
+            out_hits.append(d)
         took = (time.perf_counter() - t0) * 1000
-        return {"query": query, "mode": mode, "results": [h.to_dict() for h in hits], "took_ms": round(took, 1),
+        return {"query": query, "mode": mode, "results": out_hits, "took_ms": round(took, 1),
                 "candidates": len(scored), "timings": timings, "glob": glob_mode,
                 "weights": {"semantic": self.cfg.retrieval.semantic_weight, "lexical": self.cfg.retrieval.lexical_weight, "rrf_k": self.cfg.retrieval.rrf_k}}
 
@@ -187,20 +227,27 @@ class Retriever:
                 c.filename = round(frac, 3)
                 c.terms = terms
                 c.lexical = max(c.lexical or 0.0, 0.5 * frac)
-        # Windows Search relevance (when the file has content in SystemIndex)
-        if rc.use_windows_rank and self.windows is not None:
+        # Windows Search relevance (when the file has content in SystemIndex). Adaptive: on this
+        # class of machine the Windows content index is often empty for the indexed roots, and
+        # the call costs 15-20 ms per query, so after N consecutive empty answers it is paused.
+        if rc.use_windows_rank and self.windows is not None and self._windows_rank_active():
             try:
-                for path, rank in self.windows.freetext(query, [os.fspath(r) for r in self.cfg.roots], limit=k_docs):
+                rows = self.windows.freetext(query, [os.fspath(r) for r in self.cfg.roots], limit=k_docs)
+                matched = 0
+                for path, rank in rows:
                     row = self.store.get_document(normalize_path(path))
                     if row is None:
                         continue
+                    matched += 1
                     c = cands.setdefault(int(row["id"]), _Cand(int(row["id"])))
                     c.windows_rank = round(float(rank) / 1000.0, 3)
                     c.lexical = max(c.lexical or 0.0, c.windows_rank * 0.8)
                     if not c.terms:
                         c.terms = terms
+                self._note_windows_rank(matched)
             except Exception as e:
                 log.debug("windows freetext failed: %s", e)
+                self._note_windows_rank(0)
         self._assign_ranks(cands, "lexical")
 
     # ---------- semantic ----------
