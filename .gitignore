@@ -9,3 +9,4 @@ _probe/
 *.db-shm
 semsearch-pytest-review-*/
 dist/
+semsearch-*review*/
