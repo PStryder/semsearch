@@ -186,6 +186,26 @@ def test_resume_after_crash_requeues_running_jobs(built, root):
     assert built.store.queue_stats()["pending"] == 0
 
 
+def test_root_added_to_config_is_built_at_next_start(built, cfg, tmp_path):
+    from semsearch.indexer import Indexer
+    extra = tmp_path / "extra_root"
+    write(str(extra / "late.md"), "# Late root\n\ncontent from a root added after the first build\n")
+    cfg.roots.append(extra)
+    cfg.indexing.poll_interval_s = 0.2
+    idx = Indexer(cfg, built.store, built.extractor, built.embedder, fs_inventory=built.fs)
+    idx.fs.roots.append(str(extra))
+    assert built.store.get_meta("last_full_build_at") is not None  # a previous build exists
+    idx.start()
+    try:
+        deadline = time.time() + 20
+        while time.time() < deadline and built.store.get_document(normalize_path(str(extra / "late.md"))) is None:
+            time.sleep(0.2)
+    finally:
+        idx.stop()
+    assert built.store.get_document(normalize_path(str(extra / "late.md"))) is not None
+    assert built.store.get_meta(f"checkpoint:{normalize_path(str(extra))}") is not None
+
+
 def test_background_worker_processes_jobs(app, root):
     app.indexer.start()
     try:

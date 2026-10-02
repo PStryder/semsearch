@@ -487,7 +487,10 @@ class Indexer:
                     self.full_build()
                     last_inc = time.time()
                     last_rec = time.time()
-                elif self.store.get_meta("last_full_build_at") is None and any(os.path.isdir(r) for r in self.roots) and self.cfg.indexing.auto_start:
+                elif self.cfg.indexing.auto_start and any(os.path.isdir(r) and self.store.get_meta(f"checkpoint:{r}") is None for r in self.roots):
+                    # first start, or a root added to the configuration since the last build:
+                    # enumerate now (roots already built are a cheap stat pass) instead of
+                    # waiting for the deferred reconcile
                     self.full_build()
                     last_inc = last_rec = time.time()
                 now = time.time()
