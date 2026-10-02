@@ -92,8 +92,13 @@ not, vectors are being rebuilt after a model change (`documents_awaiting_embeddi
 **A file is missing from results** — `GET /document?path=...`: 404 means it was never
 enqueued (extension not in `text_extensions`/`document_extensions`/`extra_extensions`, or
 excluded by a glob, or outside the roots). A row with `extract_status` of `empty`, `binary`,
-`unsupported`, `too_large`, `denied` or `error` explains why there is no text; `--errors`
-shows the message for `error`.
+`unsupported`, `too_large`, `denied`, `secret_suspected` or `error` explains why there is no
+text; `--errors` shows the message for `error` and the matched pattern for `secret_suspected`
+(stage `policy`). A `policy` error for a path you expected to be indexed means it matches an
+exclusion pattern or its extension is not configured.
+
+**Stop indexing a folder** — add it to `excludes` (or remove the root) and restart: startup
+scope enforcement removes everything the new configuration no longer covers.
 
 **Windows Search shows `available: false`** — the `WSearch` service is stopped or the OLE DB
 provider is unavailable; semsearch falls back to filesystem walks for every root. Start the

@@ -22,7 +22,7 @@ DEFAULT_TEXT_EXTENSIONS = [
     ".rs", ".go", ".java", ".kt", ".swift", ".rb", ".php", ".lua", ".sql", ".r", ".jl", ".scala",
     ".ps1", ".psm1", ".sh", ".bash", ".zsh", ".bat", ".cmd",
     ".json", ".jsonl", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".xml", ".html", ".htm",
-    ".css", ".scss", ".tex", ".bib", ".env.example", ".gitignore", ".dockerfile",
+    ".css", ".scss", ".tex", ".bib", ".gitignore", ".dockerfile",  # dot-names count as their own extension
 ]
 DEFAULT_DOC_EXTENSIONS = [".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls", ".rtf"]
 
@@ -33,6 +33,13 @@ DEFAULT_EXCLUDES = [
     "**/.idea/**", "**/.vs/**", "**/bin/**", "**/obj/**", "**/target/**", "**/.cache/**",
     "**/site-packages/**", "**/*.min.js", "**/*.min.css", "**/*.lock", "**/package-lock.json",
     "**/$RECYCLE.BIN/**", "**/System Volume Information/**",
+    # credential-looking locations (path globs) ...
+    "**/.ssh/**", "**/.aws/**", "**/.azure/**", "**/.gnupg/**", "**/.kube/**", "**/.docker/config.json",
+    # ... and credential-looking FILE names (bare patterns match the file name only, never a folder name);
+    # the indexer additionally scans content (security.suspected_secret)
+    ".env", ".env.*", "*.pem", "*.key", "*.pfx", "*.p12", "*.jks", "*.kdbx", "*.ppk",
+    "id_rsa*", "id_ed25519*", "id_ecdsa*", "*secret*", "*credential*", "*password*", "*passwd*",
+    "*api_key*", "*api-key*", "*apikey*", "*.netrc", "_netrc", "*.htpasswd",
 ]
 
 
@@ -72,6 +79,7 @@ class ApiConfig(BaseModel):
     host: str = "127.0.0.1"
     port: int = 8765
     allow_non_loopback: bool = False
+    allowed_hosts: list[str] = Field(default_factory=list)  # extra Host header values accepted (DNS-rebinding guard)
     log_requests: bool = False
 
 
@@ -86,6 +94,9 @@ class IndexingConfig(BaseModel):
     max_attempts: int = 3
     extract_timeout_s: float = 120.0
     watch_filesystem: bool = True
+    fs_poll_interval_s: float = 600.0     # roots NOT covered by Windows Search are mtime-scanned at most this often
+    skip_suspected_secrets: bool = True   # refuse to index text that contains private keys / API tokens
+    reconcile_min_fraction: float = 0.5   # skip tombstoning when an enumeration returns fewer than this fraction of known docs
 
 
 class RetrievalConfig(BaseModel):

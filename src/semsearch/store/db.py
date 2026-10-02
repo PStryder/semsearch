@@ -131,67 +131,107 @@ def blob_to_vec(b: bytes) -> np.ndarray:
 
 
 class VectorCache:
-    """In-memory mirror of vec_chunks for fast brute-force cosine search."""
+    """In-memory mirror of vec_chunks for fast brute-force cosine search.
 
-    def __init__(self, dim: int):
+    Storage is a pre-allocated buffer that doubles when full, so appending a document is
+    amortized O(rows added), not O(total). Reads and writes are serialized by a lock; the
+    matrix product itself runs on a view of the live rows."""
+
+    def __init__(self, dim: int, capacity: int = 4096):
         self.dim = dim
-        self.ids = np.zeros((0,), dtype=np.int64)
-        self.mat = np.zeros((0, dim), dtype=np.float32)
+        self.n = 0
+        self.ids = np.zeros((capacity,), dtype=np.int64)
+        self.mat = np.zeros((capacity, dim), dtype=np.float32)
+        self.deleted = np.zeros((capacity,), dtype=bool)
         self.pos: dict[int, int] = {}
-        self.deleted = np.zeros((0,), dtype=bool)
         self.n_deleted = 0
+        self._lock = threading.Lock()
+
+    def _ensure(self, extra: int) -> None:
+        need = self.n + extra
+        if need <= len(self.ids):
+            return
+        cap = max(need, len(self.ids) * 2, 4096)
+        ids = np.zeros((cap,), dtype=np.int64)
+        mat = np.zeros((cap, self.dim), dtype=np.float32)
+        deleted = np.zeros((cap,), dtype=bool)
+        ids[: self.n] = self.ids[: self.n]
+        mat[: self.n] = self.mat[: self.n]
+        deleted[: self.n] = self.deleted[: self.n]
+        self.ids, self.mat, self.deleted = ids, mat, deleted
 
     def load(self, rows: Iterable[tuple[int, bytes]]) -> None:
         ids, vecs = [], []
         for cid, blob in rows:
             ids.append(cid)
             vecs.append(blob_to_vec(blob))
-        self.ids = np.array(ids, dtype=np.int64)
-        self.mat = np.vstack(vecs).astype(np.float32) if vecs else np.zeros((0, self.dim), dtype=np.float32)
-        self.pos = {int(c): i for i, c in enumerate(self.ids)}
-        self.deleted = np.zeros((len(ids),), dtype=bool)
-        self.n_deleted = 0
+        with self._lock:
+            self.n = 0
+            self.pos = {}
+            self.n_deleted = 0
+            self.ids = np.zeros((0,), dtype=np.int64)
+            self.mat = np.zeros((0, self.dim), dtype=np.float32)
+            self.deleted = np.zeros((0,), dtype=bool)
+            self._ensure(len(ids))
+            if ids:
+                self.ids[: len(ids)] = np.array(ids, dtype=np.int64)
+                self.mat[: len(ids)] = np.vstack(vecs).astype(np.float32)
+                self.n = len(ids)
+                self.pos = {int(c): i for i, c in enumerate(ids)}
 
     def add(self, ids: Sequence[int], vecs: np.ndarray) -> None:
         if len(ids) == 0:
             return
-        base = len(self.ids)
-        self.ids = np.concatenate([self.ids, np.asarray(ids, dtype=np.int64)])
-        self.mat = np.vstack([self.mat, np.asarray(vecs, dtype=np.float32)])
-        self.deleted = np.concatenate([self.deleted, np.zeros((len(ids),), dtype=bool)])
-        for i, c in enumerate(ids):
-            self.pos[int(c)] = base + i
+        with self._lock:
+            self._ensure(len(ids))
+            base = self.n
+            self.ids[base: base + len(ids)] = np.asarray(ids, dtype=np.int64)
+            self.mat[base: base + len(ids)] = np.asarray(vecs, dtype=np.float32)
+            self.deleted[base: base + len(ids)] = False
+            for i, c in enumerate(ids):
+                self.pos[int(c)] = base + i
+            self.n = base + len(ids)
 
     def remove(self, ids: Iterable[int]) -> None:
-        for c in ids:
-            i = self.pos.pop(int(c), None)
-            if i is not None and not self.deleted[i]:
-                self.deleted[i] = True
-                self.n_deleted += 1
-        if self.n_deleted > 1000 and self.n_deleted > len(self.ids) // 5:
-            self.compact()
+        with self._lock:
+            for c in ids:
+                i = self.pos.pop(int(c), None)
+                if i is not None and not self.deleted[i]:
+                    self.deleted[i] = True
+                    self.n_deleted += 1
+            if self.n_deleted > 1000 and self.n_deleted > self.n // 5:
+                self._compact()
 
     def compact(self) -> None:
-        keep = ~self.deleted
-        self.ids = self.ids[keep]
-        self.mat = self.mat[keep]
-        self.deleted = np.zeros((len(self.ids),), dtype=bool)
-        self.pos = {int(c): i for i, c in enumerate(self.ids)}
+        with self._lock:
+            self._compact()
+
+    def _compact(self) -> None:
+        keep = ~self.deleted[: self.n]
+        live_ids = self.ids[: self.n][keep]
+        live_mat = self.mat[: self.n][keep]
+        self.n = len(live_ids)
+        self.ids[: self.n] = live_ids
+        self.mat[: self.n] = live_mat
+        self.deleted[:] = False
+        self.pos = {int(c): i for i, c in enumerate(live_ids)}
         self.n_deleted = 0
 
     def __len__(self) -> int:
-        return len(self.ids) - self.n_deleted
+        return self.n - self.n_deleted
 
     def search(self, q: np.ndarray, k: int) -> list[tuple[int, float]]:
-        if len(self.ids) == 0:
-            return []
-        sims = self.mat @ np.asarray(q, dtype=np.float32)
-        if self.n_deleted:
-            sims = np.where(self.deleted, -2.0, sims)
-        k = min(k, len(sims))
-        idx = np.argpartition(-sims, k - 1)[:k]
-        idx = idx[np.argsort(-sims[idx])]
-        return [(int(self.ids[i]), float(sims[i])) for i in idx if not self.deleted[i]]
+        with self._lock:
+            n = self.n
+            if n == 0:
+                return []
+            sims = self.mat[:n] @ np.asarray(q, dtype=np.float32)
+            if self.n_deleted:
+                sims = np.where(self.deleted[:n], -2.0, sims)
+            k = min(k, n)
+            idx = np.argpartition(-sims, k - 1)[:k]
+            idx = idx[np.argsort(-sims[idx])]
+            return [(int(self.ids[i]), float(sims[i])) for i in idx if not self.deleted[i]]
 
 
 class Store:
@@ -199,6 +239,9 @@ class Store:
         self.path = str(path)
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self.lock = threading.RLock()
+        self._tls = threading.local()
+        # one writer connection (serialized by self.lock) + one read-only connection per thread:
+        # WAL readers see a consistent committed snapshot and never observe a half-written transaction
         self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
@@ -220,12 +263,29 @@ class Store:
             self._init_cache()
 
     # ---- setup ----
-    def _load_vec(self) -> None:
+    @staticmethod
+    def _load_vec_into(conn: sqlite3.Connection) -> None:
         import sqlite_vec
-        self.conn.enable_load_extension(True)
-        sqlite_vec.load(self.conn)
-        self.conn.enable_load_extension(False)
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+
+    def _load_vec(self) -> None:
+        self._load_vec_into(self.conn)
         self.vec_version = self.conn.execute("select vec_version()").fetchone()[0]
+
+    def _r(self) -> sqlite3.Connection:
+        """Per-thread read-only connection. Writers' uncommitted transactions are invisible to
+        it, so a search never observes a document between 'old vectors deleted' and 'new
+        vectors written'. Methods that read inside their own transaction use self.conn."""
+        c = getattr(self._tls, "rconn", None)
+        if c is None:
+            c = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+            c.row_factory = sqlite3.Row
+            c.execute("PRAGMA query_only=ON")
+            self._load_vec_into(c)
+            self._tls.rconn = c
+        return c
 
     def _migrate(self) -> None:
         """Add columns introduced after a database was created (CREATE IF NOT EXISTS skips them)."""
@@ -233,6 +293,9 @@ class Store:
         for col, decl in (("missing_since", "REAL"), ("title", "TEXT")):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {decl}")
+        have_jobs = {r[1] for r in self.conn.execute("PRAGMA table_info(jobs)")}
+        if "dirty" not in have_jobs:
+            self.conn.execute("ALTER TABLE jobs ADD COLUMN dirty INTEGER NOT NULL DEFAULT 0")
 
     def _vec_table_exists(self) -> bool:
         r = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'").fetchone()
@@ -254,7 +317,7 @@ class Store:
 
     # ---- meta ----
     def get_meta(self, key: str) -> str | None:
-        r = self.conn.execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
+        r = self._r().execute("SELECT value FROM meta WHERE key=?", (key,)).fetchone()
         return r[0] if r else None
 
     def set_meta(self, key: str, value: str | None) -> None:
@@ -291,10 +354,10 @@ class Store:
 
     # ---- documents ----
     def get_document(self, path_norm: str) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM documents WHERE path=?", (path_norm,)).fetchone()
+        return self._r().execute("SELECT * FROM documents WHERE path=?", (path_norm,)).fetchone()
 
     def get_document_by_id(self, doc_id: int) -> sqlite3.Row | None:
-        return self.conn.execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
+        return self._r().execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
 
     def get_documents(self, ids: Iterable[int]) -> dict[int, sqlite3.Row]:
         ids = list(ids)
@@ -302,13 +365,13 @@ class Store:
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]
             q = f"SELECT * FROM documents WHERE id IN ({','.join('?' * len(part))})"
-            for r in self.conn.execute(q, part):
+            for r in self._r().execute(q, part):
                 out[int(r["id"])] = r
         return out
 
     def find_by_file_id(self, volume_serial: int | str, file_id: int | str) -> list[sqlite3.Row]:
         # NTFS/ReFS file ids can exceed a signed 64-bit integer, so they are stored as text
-        return self.conn.execute("SELECT * FROM documents WHERE volume_serial=? AND file_id=?", (str(volume_serial), str(file_id))).fetchall()
+        return self._r().execute("SELECT * FROM documents WHERE volume_serial=? AND file_id=?", (str(volume_serial), str(file_id))).fetchall()
 
     def upsert_document(self, **f: Any) -> int:
         cols = list(f.keys())
@@ -348,7 +411,7 @@ class Store:
         rename/move indexed shortly afterwards can reclaim them via the NTFS file id."""
         with self.lock:
             self.version += 1
-            self.conn.execute("UPDATE documents SET extract_status='missing', missing_since=COALESCE(missing_since, ?) WHERE id=? AND extract_status != 'missing'",
+            self.conn.execute("UPDATE documents SET extract_status='missing', missing_since=? WHERE id=? AND (extract_status != 'missing' OR missing_since IS NULL)",
                               (time.time(), doc_id))
 
     def restore_document(self, doc_id: int, **f: Any) -> None:
@@ -369,16 +432,29 @@ class Store:
 
     def iter_paths(self, root_norm: str | None = None) -> Iterator[tuple[int, str, float | None]]:
         if root_norm:
-            cur = self.conn.execute("SELECT id, path, last_seen FROM documents WHERE root=?", (root_norm,))
+            cur = self._r().execute("SELECT id, path, last_seen FROM documents WHERE root=?", (root_norm,))
         else:
-            cur = self.conn.execute("SELECT id, path, last_seen FROM documents")
+            cur = self._r().execute("SELECT id, path, last_seen FROM documents")
         for r in cur:
             yield int(r[0]), r[1], r[2]
 
-    def documents_needing_embedding(self, fingerprint: str, limit: int = 1000) -> list[sqlite3.Row]:
-        return self.conn.execute(
-            "SELECT id, path, display_path FROM documents WHERE n_chunks > 0 AND (embedding_fingerprint IS NULL OR embedding_fingerprint != ?) LIMIT ?",
-            (fingerprint, limit)).fetchall()
+    def documents_needing_embedding(self, fingerprint: str, limit: int = 1000, after_id: int = 0) -> list[sqlite3.Row]:
+        return self._r().execute(
+            "SELECT id, path, display_path FROM documents WHERE id > ? AND n_chunks > 0 AND extract_status='ok' "
+            "AND (embedding_fingerprint IS NULL OR embedding_fingerprint != ?) ORDER BY id LIMIT ?",
+            (int(after_id), fingerprint, limit)).fetchall()
+
+    def paths_with_prefix(self, prefix_norm: str) -> list[tuple[int, str]]:
+        """Documents whose normalized path starts with prefix (a directory, with trailing backslash).
+        Uses the unique index on path: a range scan, not a table scan."""
+        p = prefix_norm if prefix_norm.endswith("\\") else prefix_norm + "\\"
+        rows = self._r().execute("SELECT id, path FROM documents WHERE path >= ? AND path < ?", (p, p + "￿")).fetchall()
+        return [(int(r[0]), r[1]) for r in rows]
+
+    def count_documents(self, root_norm: str | None = None) -> int:
+        if root_norm is None:
+            return int(self._r().execute("SELECT COUNT(*) FROM documents").fetchone()[0])
+        return int(self._r().execute("SELECT COUNT(*) FROM documents WHERE root=? AND extract_status != 'missing'", (root_norm,)).fetchone()[0])
 
     # ---- chunks & vectors ----
     def _delete_doc_vectors(self, doc_id: int) -> None:
@@ -391,14 +467,14 @@ class Store:
                 self.cache.remove(ids)
 
     def chunks_for_doc(self, doc_id: int) -> list[sqlite3.Row]:
-        return self.conn.execute("SELECT * FROM chunks WHERE doc_id=? ORDER BY ordinal", (doc_id,)).fetchall()
+        return self._r().execute("SELECT * FROM chunks WHERE doc_id=? ORDER BY ordinal", (doc_id,)).fetchall()
 
     def get_chunks(self, ids: Iterable[int]) -> dict[int, sqlite3.Row]:
         ids = list(ids)
         out: dict[int, sqlite3.Row] = {}
         for i in range(0, len(ids), 500):
             part = ids[i:i + 500]
-            for r in self.conn.execute(f"SELECT * FROM chunks WHERE id IN ({','.join('?' * len(part))})", part):
+            for r in self._r().execute(f"SELECT * FROM chunks WHERE id IN ({','.join('?' * len(part))})", part):
                 out[int(r["id"])] = r
         return out
 
@@ -410,7 +486,7 @@ class Store:
             return out
         for i in range(0, len(hs), 400):
             part = hs[i:i + 400]
-            rows = self.conn.execute(
+            rows = self._r().execute(
                 f"SELECT c.text_hash, v.embedding FROM chunks c JOIN vec_chunks v ON v.rowid = c.id "
                 f"WHERE c.text_hash IN ({','.join('?' * len(part))})", part).fetchall()
             for h, blob in rows:
@@ -418,26 +494,31 @@ class Store:
                     out[h] = blob_to_vec(blob)
         return out
 
+    def _replace_chunks_inner(self, doc_id: int, chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> list[int]:
+        """Inside an open transaction on self.conn: swap a document's chunks and vectors."""
+        self._delete_doc_vectors(doc_id)
+        self.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
+        ids: list[int] = []
+        for ch in chunks:
+            # text_hash covers what was embedded (title header + text) so vector reuse is exact
+            cur = self.conn.execute("INSERT INTO chunks(doc_id, ordinal, start, end, text, text_hash) VALUES(?,?,?,?,?,?)",
+                                    (doc_id, ch.ordinal, ch.start, ch.end, ch.text, text_hash(ch.for_embedding)))
+            ids.append(int(cur.lastrowid))
+        if vectors is not None and len(ids):
+            assert vectors.shape[0] == len(ids)
+            for cid, v in zip(ids, vectors):
+                self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))
+        self.conn.execute("UPDATE documents SET n_chunks=?, embedding_fingerprint=? WHERE id=?",
+                          (len(ids), fingerprint if vectors is not None else None, doc_id))
+        return ids
+
     def replace_chunks(self, doc_id: int, chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> list[int]:
         """Atomically replace a document's chunks (and vectors). Returns new chunk ids."""
         with self.lock:
             self.version += 1
             self.conn.execute("BEGIN")
             try:
-                self._delete_doc_vectors(doc_id)
-                self.conn.execute("DELETE FROM chunks WHERE doc_id=?", (doc_id,))
-                ids: list[int] = []
-                for ch in chunks:
-                    # text_hash covers what was embedded (title header + text) so vector reuse is exact
-                    cur = self.conn.execute("INSERT INTO chunks(doc_id, ordinal, start, end, text, text_hash) VALUES(?,?,?,?,?,?)",
-                                            (doc_id, ch.ordinal, ch.start, ch.end, ch.text, text_hash(ch.for_embedding)))
-                    ids.append(int(cur.lastrowid))
-                if vectors is not None and len(ids):
-                    assert vectors.shape[0] == len(ids)
-                    for cid, v in zip(ids, vectors):
-                        self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))
-                self.conn.execute("UPDATE documents SET n_chunks=?, embedding_fingerprint=? WHERE id=?",
-                                  (len(ids), fingerprint if vectors is not None else None, doc_id))
+                ids = self._replace_chunks_inner(doc_id, chunks, vectors, fingerprint)
                 self.conn.execute("COMMIT")
             except Exception:
                 self.conn.execute("ROLLBACK")
@@ -446,13 +527,39 @@ class Store:
                 self.cache.add(ids, vectors)
             return ids
 
+    def write_document(self, fields: dict[str, Any], chunks: Sequence[Chunk], vectors: np.ndarray | None, fingerprint: str | None) -> int:
+        """Document row + chunks + vectors in ONE transaction. Called only after extraction and
+        embedding have succeeded, so a failure anywhere leaves the previous version of the
+        document fully intact and searchable, and a retry sees the old stat/hash."""
+        cols = list(fields.keys())
+        with self.lock:
+            self.version += 1
+            self.conn.execute("BEGIN")
+            try:
+                sql = (f"INSERT INTO documents({','.join(cols)}) VALUES({','.join('?' * len(cols))}) "
+                       f"ON CONFLICT(path) DO UPDATE SET {','.join(f'{c}=excluded.{c}' for c in cols if c != 'path')}")
+                self.conn.execute(sql, [fields[c] for c in cols])
+                doc_id = int(self.conn.execute("SELECT id FROM documents WHERE path=?", (fields["path"],)).fetchone()[0])
+                ids = self._replace_chunks_inner(doc_id, chunks, vectors, fingerprint)
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+            if vectors is not None and self.cache is not None and len(ids):
+                self.cache.add(ids, vectors)
+            return doc_id
+
     def set_vectors(self, chunk_ids: Sequence[int], vectors: np.ndarray, doc_id: int, fingerprint: str) -> None:
         with self.lock:
             self.version += 1
             self.conn.execute("BEGIN")
             try:
-                for cid, v in zip(chunk_ids, vectors):
-                    self.conn.execute("INSERT OR REPLACE INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (int(cid), vec_to_blob(v)))
+                ids = [int(c) for c in chunk_ids]
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
+                for cid, v in zip(ids, vectors):
+                    self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))  # vec0 rejects OR REPLACE
                 self.conn.execute("UPDATE documents SET embedding_fingerprint=? WHERE id=?", (fingerprint, doc_id))
                 self.conn.execute("COMMIT")
             except Exception:
@@ -469,37 +576,42 @@ class Store:
             return self.cache.search(q, k)
         if not self._vec_table_exists():
             return []
-        rows = self.conn.execute("SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance",
+        rows = self._r().execute("SELECT rowid, distance FROM vec_chunks WHERE embedding MATCH ? AND k = ? ORDER BY distance",
                                  (vec_to_blob(q), int(k))).fetchall()
         return [(int(r[0]), 1.0 - float(r[1])) for r in rows]
 
     def fts(self, match_expr: str, limit: int) -> list[tuple[int, int, float]]:
         """Return [(chunk_id, doc_id, bm25_score)] where higher score is better."""
-        rows = self.conn.execute(
+        rows = self._r().execute(
             "SELECT f.rowid, c.doc_id, bm25(chunks_fts) AS r FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
             "WHERE chunks_fts MATCH ? ORDER BY r LIMIT ?", (match_expr, int(limit))).fetchall()
         return [(int(r[0]), int(r[1]), -float(r[2])) for r in rows]
 
     def filename_like(self, needle: str, limit: int = 200) -> list[tuple[int, str]]:
-        like = "%" + needle.replace("%", "[%]").replace("_", "[_]") + "%"
-        rows = self.conn.execute("SELECT id, filename FROM documents WHERE filename LIKE ? LIMIT ?", (like, int(limit))).fetchall()
+        # SQLite LIKE has no bracket escapes; use ESCAPE so '_' and '%' in the needle are literal
+        esc = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        rows = self._r().execute("SELECT id, filename FROM documents WHERE filename LIKE ? ESCAPE '\\' LIMIT ?", ("%" + esc + "%", int(limit))).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
     def filename_glob(self, pattern: str, limit: int = 200) -> list[tuple[int, str]]:
-        rows = self.conn.execute("SELECT id, filename FROM documents WHERE filename GLOB ? LIMIT ?", (pattern, int(limit))).fetchall()
+        rows = self._r().execute("SELECT id, filename FROM documents WHERE filename GLOB ? LIMIT ?", (pattern, int(limit))).fetchall()
         if not rows and pattern != pattern.lower():
-            rows = self.conn.execute("SELECT id, filename FROM documents WHERE lower(filename) GLOB ? LIMIT ?", (pattern.lower(), int(limit))).fetchall()
+            rows = self._r().execute("SELECT id, filename FROM documents WHERE lower(filename) GLOB ? LIMIT ?", (pattern.lower(), int(limit))).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
     # ---- job queue ----
+    # A job that is re-enqueued while 'running' is marked dirty; complete_job then returns it to
+    # 'pending' instead of deleting it, so a change that lands mid-index is not lost.
+    _ENQUEUE_SQL = (
+        "INSERT INTO jobs(path, op, priority, state, attempts, enqueued_at, updated_at, dirty) VALUES(?,?,?,'pending',0,?,?,0) "
+        "ON CONFLICT(path) DO UPDATE SET op=excluded.op, priority=min(jobs.priority, excluded.priority), "
+        "state=CASE WHEN jobs.state='running' THEN 'running' ELSE 'pending' END, "
+        "dirty=CASE WHEN jobs.state='running' THEN 1 ELSE 0 END, attempts=0, error=NULL, updated_at=excluded.updated_at")
+
     def enqueue(self, path_norm: str, op: str, priority: int = 5) -> None:
         now = time.time()
         with self.lock:
-            self.conn.execute(
-                "INSERT INTO jobs(path, op, priority, state, attempts, enqueued_at, updated_at) VALUES(?,?,?,'pending',0,?,?) "
-                "ON CONFLICT(path) DO UPDATE SET op=excluded.op, priority=min(jobs.priority, excluded.priority), "
-                "state=CASE WHEN jobs.state='running' THEN 'running' ELSE 'pending' END, attempts=0, error=NULL, updated_at=excluded.updated_at",
-                (path_norm, op, priority, now, now))
+            self.conn.execute(self._ENQUEUE_SQL, (path_norm, op, priority, now, now))
 
     def enqueue_many(self, items: Iterable[tuple[str, str, int]]) -> int:
         now = time.time()
@@ -508,11 +620,7 @@ class Store:
             self.conn.execute("BEGIN")
             try:
                 for path_norm, op, priority in items:
-                    self.conn.execute(
-                        "INSERT INTO jobs(path, op, priority, state, attempts, enqueued_at, updated_at) VALUES(?,?,?,'pending',0,?,?) "
-                        "ON CONFLICT(path) DO UPDATE SET op=excluded.op, priority=min(jobs.priority, excluded.priority), "
-                        "state=CASE WHEN jobs.state='running' THEN 'running' ELSE 'pending' END, attempts=0, error=NULL, updated_at=excluded.updated_at",
-                        (path_norm, op, priority, now, now))
+                    self.conn.execute(self._ENQUEUE_SQL, (path_norm, op, priority, now, now))
                     n += 1
                 self.conn.execute("COMMIT")
             except Exception:
@@ -530,6 +638,8 @@ class Store:
 
     def complete_job(self, job_id: int) -> None:
         with self.lock:
+            # re-enqueued while running -> run it again; otherwise done
+            self.conn.execute("UPDATE jobs SET state='pending', dirty=0, attempts=0, updated_at=? WHERE id=? AND state='running' AND dirty=1", (time.time(), job_id))
             self.conn.execute("DELETE FROM jobs WHERE id=? AND state='running'", (job_id,))
 
     def fail_job(self, job_id: int, error: str, max_attempts: int) -> None:
@@ -555,7 +665,7 @@ class Store:
             self.conn.execute("DELETE FROM jobs")
 
     def queue_stats(self) -> dict[str, int]:
-        rows = self.conn.execute("SELECT state, COUNT(*) FROM jobs GROUP BY state").fetchall()
+        rows = self._r().execute("SELECT state, COUNT(*) FROM jobs GROUP BY state").fetchall()
         d = {"pending": 0, "running": 0, "failed": 0}
         for s, n in rows:
             d[s] = int(n)
@@ -568,11 +678,11 @@ class Store:
             self.conn.execute("DELETE FROM errors WHERE id NOT IN (SELECT id FROM errors ORDER BY at DESC LIMIT 5000)")
 
     def recent_errors(self, limit: int = 100) -> list[dict]:
-        rows = self.conn.execute("SELECT path, stage, message, at FROM errors ORDER BY at DESC LIMIT ?", (int(limit),)).fetchall()
+        rows = self._r().execute("SELECT path, stage, message, at FROM errors ORDER BY at DESC LIMIT ?", (int(limit),)).fetchall()
         return [dict(r) for r in rows]
 
     def stats(self) -> dict[str, Any]:
-        c = self.conn
+        c = self._r()
         by_status = {r[0] or "none": int(r[1]) for r in c.execute("SELECT extract_status, COUNT(*) FROM documents GROUP BY extract_status")}
         by_ext = {r[0] or "": int(r[1]) for r in c.execute("SELECT extension, COUNT(*) AS n FROM documents GROUP BY extension ORDER BY n DESC LIMIT 40")}
         by_method = {r[0] or "none": int(r[1]) for r in c.execute("SELECT extract_method, COUNT(*) FROM documents GROUP BY extract_method")}

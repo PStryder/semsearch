@@ -16,9 +16,12 @@ semsearch reads one YAML file. Resolution order:
 data_dir: "%LOCALAPPDATA%/semsearch"   # DB, logs. Environment variables and ~ are expanded.
 roots:                                  # directories to index (absolute paths)
   - "F:/HexyLab"
-excludes:                               # glob patterns against the full path with forward slashes
-  - "**/.git/**"                        # (defaults cover VCS dirs, node_modules, venvs, caches,
-  - "**/node_modules/**"                #  build output, minified bundles, lockfiles)
+excludes:                               # setting this REPLACES the default list
+  - "**/.git/**"                        # a pattern with '/' matches the full path (forward slashes)
+  - "*.pem"                             # a bare pattern matches the FILE name only, never a folder name
+  # defaults: VCS dirs, node_modules, venvs, caches, build output, minified bundles, lockfiles,
+  # credential locations (.ssh, .aws, .azure, .gnupg, .kube) and credential-looking file names
+  # (.env*, *.pem, *.key, *.pfx, *.p12, id_rsa*, *secret*, *credential*, *password*, *api_key*, ...)
 text_extensions: [...]                  # read directly as text (code, markdown, json, yaml, ...)
 document_extensions: [.pdf, .docx, .doc, .pptx, .ppt, .xlsx, .xls, .rtf]
 extra_extensions: []                    # additional extensions treated as text
@@ -52,6 +55,7 @@ api:
   host: 127.0.0.1
   port: 8765
   allow_non_loopback: false
+  allowed_hosts: []                     # extra Host header values; loopback names are always allowed
   log_requests: false
 
 indexing:
@@ -65,6 +69,9 @@ indexing:
   max_attempts: 3                       # per job before it is marked failed
   extract_timeout_s: 120                # per file, document formats (child process)
   watch_filesystem: true                # ReadDirectoryChangesW watcher per root
+  fs_poll_interval_s: 600               # roots NOT in the Windows index are mtime-scanned at most this often
+  skip_suspected_secrets: true          # refuse text containing private keys / API tokens (status secret_suspected)
+  reconcile_min_fraction: 0.5           # skip tombstoning when an enumeration returns fewer than this share of known files
 
 retrieval:
   default_mode: hybrid                  # literal | semantic | hybrid

@@ -69,7 +69,7 @@ Per-file decision ladder in `Indexer._index_file`:
 2. same size and mtime as stored, and nothing left to do → `unchanged` (no I/O beyond `lstat`)
 3. hash the bytes; same hash and same model → `touched` (metadata only)
 4. unknown path, but a tombstoned or vanished row with the same NTFS id and hash → `moved` (row re-pointed, chunks and vectors kept)
-5. extract → chunk → prepend the document title to each chunk for embedding → look up existing vectors by embed-text hash → embed only the new chunk texts → write document, chunks, vectors in one transaction
+5. extract → chunk → prepend the document title to each chunk for embedding → look up existing vectors by embed-text hash → embed only the new chunk texts → write document row, chunks and vectors in **one transaction, only after embedding succeeded**; a failure anywhere leaves the previous version intact and a retry re-extracts because the stored stat/hash is still the old one
 
 The **title header** is the first Markdown heading near the top of the text, or a humanized
 filename (with the parent folder for generic names like `README`). It is stored in
@@ -91,7 +91,11 @@ Explicit removal through the API or CLI deletes immediately.
 | Watcher (`ReadDirectoryChangesW`) | ~1.5 s settle | add, modify, delete, rename | Buffer overflow falls back to the next incremental/reconcile |
 | Windows Search `GatherTime >= checkpoint` | 1 to 2 s indexer lag + poll interval | add, modify, rename-as-new-path | Only for roots Windows indexes; checkpoint stored per root |
 | Filesystem mtime scan | poll interval | add, modify | For roots Windows does not index |
-| Reconcile (full enumeration diff) | `reconcile_interval_s` | delete, anything missed | Enumeration is Windows Search plus a filesystem walk, unioned |
+| Reconcile (full enumeration diff) | `reconcile_interval_s` | delete, add, modify (anything the others missed) | Enumeration is Windows Search plus a filesystem walk, unioned; files the store lacks or holds with a stale size/mtime are enqueued; tombstoning is skipped when the enumeration returns fewer than `reconcile_min_fraction` of the known files |
+
+A job that is re-enqueued while that same path is being processed is flagged dirty; when the
+running job completes it goes back to pending instead of being deleted, so a save that lands
+mid-index is not lost.
 
 Full builds use the same union: Windows Search first (fast, includes metadata and respects the
 user's indexer exclusions), then a filesystem walk to pick up anything the indexer has not
@@ -159,6 +163,16 @@ invalidates it; cached responses carry `"cached": true`.
 ## Security posture
 
 - API binds 127.0.0.1; a non-loopback bind requires `api.allow_non_loopback: true`
+- Every request's Host header must be a loopback name (or a configured `allowed_hosts` entry);
+  anything else gets 421. This closes DNS rebinding, where a web page resolves its own
+  hostname to 127.0.0.1 and reads extracted file text through the browser
+- Credential-looking file names and directories are excluded by default, and extracted text is
+  scanned for private-key blocks and known API-token shapes before it is stored; a hit is
+  recorded as `secret_suspected` (visible in `/stats` and `/errors`) and the text is dropped
+- Exclusion and extension policy is enforced when a job runs, not only when it is enqueued, so
+  an explicit `/index/path` cannot pull in an excluded file; at startup `enforce_scope` removes
+  documents that a removed root or a new exclusion no longer covers, and retrieval filters to
+  the configured roots regardless
 - No endpoint writes to, moves or deletes source files; index mutations touch only the sidecar DB
 - Every indexed path must lie inside a configured root after normalization; `..`, long-path
   prefixes and `file:` URLs are normalized before the check

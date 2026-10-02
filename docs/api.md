@@ -2,7 +2,8 @@
 
 Base URL: `http://127.0.0.1:8765` (configurable). JSON in, JSON out. Interactive docs at `/docs`.
 All endpoints are unauthenticated and loopback-only; nothing here can modify, move or delete a
-source file.
+source file. Requests whose `Host` header is not a loopback name (or a configured
+`api.allowed_hosts` entry) are answered with **421** to defeat DNS rebinding from a browser.
 
 ## POST /search
 

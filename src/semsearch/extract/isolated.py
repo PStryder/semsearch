@@ -53,7 +53,11 @@ class IsolatedExtractor:
         self._proc = None
         self._conn = None
         self._lock = threading.Lock()
-        self._inproc_exts = {e.lower() for e in cfg.text_extensions} | {e.lower() for e in cfg.extra_extensions}
+        # Only chains made purely of pure-Python text extraction stay in-process. Anything that
+        # can reach native code (IFilter, pypdf, Office parsers) goes to the child, including
+        # text-like extensions whose chain starts with an IFilter (.html/.htm).
+        from .text import TextExtractor
+        self._inproc_exts = {ext for ext, chain in registry.chains.items() if chain and all(isinstance(e, TextExtractor) for e in chain)}
         self.restarts = 0
 
     def _start(self) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import re
 import stat
 from dataclasses import dataclass
 
@@ -84,11 +85,57 @@ def to_glob_form(path: str) -> str:
     return str(path).replace("\\", "/")
 
 
-def is_excluded(path: str, patterns: list[str]) -> bool:
+def file_extension(path: str) -> str:
+    """Lower-case extension; a dot-name with no other extension (.gitignore, .env) is its own
+    extension, which os.path.splitext would report as empty."""
+    name = os.path.basename(str(path))
+    ext = os.path.splitext(name)[1]
+    if not ext and name.startswith("."):
+        return name.lower()
+    return ext.lower()
+
+
+_SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
+    ("private_key_block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----")),
+    ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("openai_key", re.compile(r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}\b")),
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,}\b")),
+    ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{60,}\b")),
+    ("slack_token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
+    ("stripe_key", re.compile(r"\b[sr]k_live_[A-Za-z0-9]{20,}\b")),
+    ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("google_oauth_client_secret", re.compile(r"\"client_secret\"\s*:\s*\"[A-Za-z0-9_-]{20,}\"")),
+    ("service_account_key", re.compile(r"\"private_key\"\s*:\s*\"-----BEGIN")),
+    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b")),
+    ("generic_assignment", re.compile(r"(?i)\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*[\"']?[A-Za-z0-9+/_\-]{24,}[\"']?")),
+]
+
+
+def suspected_secret(text: str, max_scan_chars: int = 400_000) -> str | None:
+    """Name of the first credential pattern found in text, or None. Deliberately conservative:
+    the generic rule needs an assignment to a 24+ character opaque literal, so prose and
+    ordinary code do not trip it."""
+    sample = text[:max_scan_chars]
+    for name, pat in _SECRET_PATTERNS:
+        if pat.search(sample):
+            return name
+    return None
+
+
+def is_excluded(path: str, patterns: list[str], is_dir: bool = False) -> bool:
+    """Exclusion globs. A pattern containing '/' is matched against the full path (forward
+    slashes); a bare pattern such as '*.pem' or '*secret*' is matched against the FILE name
+    only, never against directory names, so a folder called 'credential-docs' is not skipped
+    while 'client_secret.json' inside it is."""
     g = to_glob_form(path)
     low = g.lower()
+    base = low.rsplit("/", 1)[-1]
     for pat in patterns:
         p = pat.lower()
+        if "/" not in p:
+            if not is_dir and fnmatch.fnmatchcase(base, p):
+                return True
+            continue
         if fnmatch.fnmatchcase(low, p):
             return True
         # "**/name/**" should also match when name is the last segment (a dir itself)
@@ -202,9 +249,10 @@ def walk_safe(root: str, roots: list[str], excludes: list[str], follow_reparse: 
                 attrs = getattr(st, "st_file_attributes", 0)
                 if attrs & FILE_ATTRIBUTE_REPARSE_POINT and not follow_reparse:
                     continue
-                if is_excluded(p, excludes):
+                is_dir = entry.is_dir(follow_symlinks=follow_reparse)
+                if is_excluded(p, excludes, is_dir=is_dir):
                     continue
-                if entry.is_dir(follow_symlinks=follow_reparse):
+                if is_dir:
                     if follow_reparse:
                         real = os.path.realpath(p)
                         if not is_within(real, roots):

@@ -5,7 +5,7 @@ import os
 from typing import Iterator
 
 from ..models import FileEntry
-from ..security import walk_safe
+from ..security import file_extension, walk_safe
 
 
 class FilesystemInventory:
@@ -26,7 +26,7 @@ class FilesystemInventory:
             except OSError:
                 continue
             yield FileEntry(path=path, size=st.st_size, mtime=st.st_mtime, source=self.name,
-                            extension=os.path.splitext(path)[1].lower())
+                            extension=file_extension(path))
 
     def changed_since(self, root: str, since_ts: float) -> Iterator[FileEntry]:
         for fe in self.enumerate(root):

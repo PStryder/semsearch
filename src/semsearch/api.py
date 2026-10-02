@@ -53,7 +53,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         if state is not None:
             app.state.st = state
         else:
-            app.state.st = AppState(cfg, start_indexer=cfg.indexing.auto_start or True)
+            app.state.st = AppState(cfg, start_indexer=cfg.indexing.auto_start)
         try:
             yield
         finally:
@@ -61,6 +61,27 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
                 app.state.st.close()
 
     app = FastAPI(title="semsearch", version=__version__, lifespan=lifespan, docs_url="/docs", redoc_url=None)
+
+    allowed_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
+    if cfg.api.allow_non_loopback:
+        allowed_hosts.add(cfg.api.host.lower())
+    allowed_hosts |= {h.lower() for h in cfg.api.allowed_hosts}
+
+    @app.middleware("http")
+    async def _host_guard(request, call_next):
+        # Loopback binding does not stop a web page from reaching us through DNS rebinding
+        # (evil.example resolving to 127.0.0.1); the Host header does. Only loopback names,
+        # the configured bind host and explicit allowed_hosts are served.
+        host = (request.headers.get("host") or "").strip().lower()
+        if host.startswith("["):                      # [::1]:8765
+            name = host[1: host.find("]")] if "]" in host else host
+        elif host.count(":") == 1 and host.rsplit(":", 1)[1].isdigit():   # 127.0.0.1:8765
+            name = host.rsplit(":", 1)[0]
+        else:
+            name = host
+        if name not in allowed_hosts:
+            return JSONResponse(status_code=421, content={"detail": f"host '{host}' is not allowed; use http://127.0.0.1:{cfg.api.port}/"})
+        return await call_next(request)
 
     def st() -> AppState:
         return app.state.st
@@ -70,7 +91,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         s = st()
         return {"ok": True, "version": __version__, "uptime_s": round(time.time() - app.state.started, 1),
                 "indexer_running": s.indexer.state.running, "embedding": s.embedder.fingerprint,
-                "windows_search": s.windows is not None, "documents": s.store.stats()["documents"]}
+                "windows_search": s.windows is not None, "documents": s.store.count_documents()}
 
     @app.post("/search")
     def search_post(req: SearchRequest):

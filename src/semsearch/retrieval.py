@@ -105,6 +105,8 @@ class Retriever:
             d = docs.get(c.doc_id)
             if d is None or d["extract_status"] == "missing":
                 continue
+            if self.roots and not is_within(d["display_path"], self.roots):
+                continue  # belt and braces: never surface a document outside the configured roots
             if root_filter and not is_within(d["display_path"], root_filter):
                 continue
             if ext_filter and (d["extension"] or "") not in ext_filter:
@@ -125,11 +127,13 @@ class Retriever:
     def _is_glob(q: str) -> bool:
         return (("*" in q) or ("?" in q)) and (" " not in q.strip())
 
-    @staticmethod
-    def terms(q: str) -> list[str]:
+    MAX_TERMS = 32
+
+    @classmethod
+    def terms(cls, q: str) -> list[str]:
         toks = [t.lower() for t in _TOKEN.findall(q)]
         out = [t for t in toks if t not in _STOP and len(t) > 1]
-        return out or toks
+        return (out or toks)[: cls.MAX_TERMS]  # a pasted paragraph must not become a 500-term FTS expression
 
     def fts_expr(self, terms: list[str], conjunctive: bool) -> str:
         quoted = ['"' + t.replace('"', '""') + '"' for t in terms]

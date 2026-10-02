@@ -57,7 +57,10 @@ def _print_results(res: dict, verbose: bool) -> None:
 def _fmt_ts(ts):
     if not ts:
         return "-"
-    return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        return dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+    except (OSError, OverflowError, ValueError):
+        return "?"
 
 
 def _print_status(s: dict) -> None:

@@ -4,7 +4,19 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-ExtractStatus = Literal["ok", "empty", "unsupported", "error", "too_large", "binary", "missing", "denied", "skipped"]
+ExtractStatus = Literal["ok", "empty", "unsupported", "error", "too_large", "binary", "missing", "denied", "skipped", "secret_suspected"]
+
+
+def iso_timestamp(ts: float | None) -> str | None:
+    """ISO-8601 local time, or None for missing/invalid values. Windows raises OSError from
+    fromtimestamp for pre-1970 or FILETIME-zero mtimes, which do occur on real disks."""
+    if ts is None:
+        return None
+    import datetime as _dt
+    try:
+        return _dt.datetime.fromtimestamp(float(ts)).isoformat(timespec="seconds")
+    except (OSError, OverflowError, ValueError):
+        return None
 
 
 @dataclass(slots=True)
@@ -73,7 +85,6 @@ class SearchHit:
     doc_id: int
 
     def to_dict(self) -> dict[str, Any]:
-        import datetime as _dt
         return {
             "path": self.path,
             "filename": self.filename,
@@ -81,7 +92,7 @@ class SearchHit:
             "match_type": self.match_type,
             "excerpt": self.excerpt,
             "chunk_ordinal": self.chunk_ordinal,
-            "modified": _dt.datetime.fromtimestamp(self.modified).isoformat(timespec="seconds") if self.modified else None,
+            "modified": iso_timestamp(self.modified),
             "modified_ts": self.modified,
             "file_type": self.file_type,
             "size": self.size,

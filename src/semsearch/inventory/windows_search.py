@@ -22,7 +22,7 @@ import threading
 from typing import Iterator
 
 from ..models import FileEntry
-from ..security import display_path, is_excluded
+from ..security import display_path, file_extension, is_excluded
 
 log = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ class WindowsSearchInventory:
         is_dir = (item_type == "Directory")
         return FileEntry(path=path, size=int(size) if size is not None else None, mtime=_to_ts(modified), is_dir=is_dir,
                          source=self.name, win_entry_id=int(entry_id) if entry_id is not None else None,
-                         gather_time=_to_ts(gather), extension=(ext or os.path.splitext(path)[1]).lower())
+                         gather_time=_to_ts(gather), extension=(ext.lower() if ext else file_extension(path)))
 
     def enumerate(self, root: str) -> Iterator[FileEntry]:
         scope = _sql_str(path_to_url(root) + "/")
