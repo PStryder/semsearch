@@ -1,0 +1,149 @@
+# Configuration
+
+semsearch reads one YAML file. Resolution order:
+
+1. `--config <path>` on the command line
+2. `$SEMSEARCH_CONFIG`
+3. `./semsearch.yaml`
+4. `%LOCALAPPDATA%\semsearch\semsearch.yaml`
+
+`semsearch --init-config` prints a starter file. With no file at all the defaults apply and
+`roots` is empty, so nothing is indexed until you add at least one root.
+
+## Reference
+
+```yaml
+data_dir: "%LOCALAPPDATA%/semsearch"   # DB, logs. Environment variables and ~ are expanded.
+roots:                                  # directories to index (absolute paths)
+  - "F:/HexyLab"
+excludes:                               # glob patterns against the full path with forward slashes
+  - "**/.git/**"                        # (defaults cover VCS dirs, node_modules, venvs, caches,
+  - "**/node_modules/**"                #  build output, minified bundles, lockfiles)
+text_extensions: [...]                  # read directly as text (code, markdown, json, yaml, ...)
+document_extensions: [.pdf, .docx, .doc, .pptx, .ppt, .xlsx, .xls, .rtf]
+extra_extensions: []                    # additional extensions treated as text
+
+embedding:
+  provider: onnx                        # onnx | sentence-transformers | hashing
+  model: BAAI/bge-small-en-v1.5         # HF repo id with onnx/model.onnx, or a local directory
+  revision: null                        # pin a HF revision
+  device: cpu                           # steady-state document embedding: cpu | cuda[:n] | dml[:n] | auto
+  bulk_device: same                     # used during full builds / deep queues (see "Devices")
+  query_device: same                    # query embedding (latency matters)
+  bulk_threshold: 500                   # pending jobs above which bulk_device is used
+  batch_size: 32
+  max_seq_length: 512
+  pooling: cls                          # cls (bge) | mean (MiniLM and most sentence-transformers)
+  normalize: true
+  query_prefix: "Represent this sentence for searching relevant passages: "  # bge convention
+  document_prefix: ""
+  allow_download: true                  # false = must already be in the HF cache or a local dir
+  threads: 0                            # onnxruntime intra-op threads, 0 = default
+  on_model_change: reembed              # reembed | refuse
+
+chunking:
+  target_chars: 1400
+  max_chars: 2200
+  overlap_chars: 180
+  min_chars: 40
+  max_chunks_per_doc: 400
+
+api:
+  host: 127.0.0.1
+  port: 8765
+  allow_non_loopback: false
+  log_requests: false
+
+indexing:
+  use_windows_search: true              # inventory + GatherTime deltas + FREETEXT when the root is indexed
+  poll_interval_s: 30                   # incremental pass cadence
+  reconcile_interval_s: 3600            # full enumeration diff (deletes) and tombstone purge
+  auto_start: true                      # run a full build on first start if none was done
+  max_file_bytes: 52428800              # 50 MB
+  max_text_chars: 2000000
+  follow_reparse_points: false
+  max_attempts: 3                       # per job before it is marked failed
+  extract_timeout_s: 120                # per file, document formats (child process)
+  watch_filesystem: true                # ReadDirectoryChangesW watcher per root
+
+retrieval:
+  default_mode: hybrid                  # literal | semantic | hybrid
+  fusion: convex                        # convex | rrf
+  rrf_k: 60
+  semantic_weight: 0.6
+  lexical_weight: 0.4
+  candidate_chunks: 300                 # top-k chunks pulled from each signal before fusion
+  candidate_docs: 100
+  use_windows_rank: true
+  excerpt_chars: 420
+  vector_cache: true                    # keep vectors in RAM for fast queries
+
+log_level: INFO
+```
+
+## Choosing an embedding model
+
+| Model | dim | CPU speed (this machine) | Notes |
+|---|---|---|---|
+| `BAAI/bge-small-en-v1.5` (default) | 384 | ~26 chunks/s | Good quality/speed balance; `pooling: cls` |
+| `BAAI/bge-base-en-v1.5` | 768 | ~7.6 chunks/s | See docs/evaluation.md for the measured quality difference; 2x RAM for the vector cache |
+| `sentence-transformers/all-MiniLM-L6-v2` | 384 | ~2x faster | Set `pooling: mean`, `query_prefix: ""` |
+| `nomic-ai/nomic-embed-text-v1.5` | 768 | slower | Needs `query_prefix: "search_query: "`, `document_prefix: "search_document: "`, `pooling: mean` |
+
+Any HF repo that ships `onnx/model.onnx` and `tokenizer.json` works. For a fully offline
+install copy those two files into a directory and set `model` to that path.
+
+Changing `model`, `pooling` or `revision` changes the fingerprint; existing vectors are dropped
+and re-embedded from stored chunk text in the background (`on_model_change: reembed`).
+
+## Devices
+
+Exactly one ONNX Runtime build is installed, chosen by extra:
+
+| extra | runtime | devices available |
+|---|---|---|
+| `cpu` | `onnxruntime` | `cpu` |
+| `dml` | `onnxruntime-directml` | `cpu`, `dml:<adapter>` (any DirectX 12 GPU, including integrated graphics) |
+| `gpu` | `onnxruntime-gpu` | `cpu`, `cuda:<n>` (needs CUDA 12 + cuDNN 9) |
+
+`uv sync --extra dml` switches an existing environment (the previous runtime is removed).
+DirectML adapter numbering follows DXGI enumeration: on this workstation `dml:0` is the RTX
+4080 and `dml:1` is the Ryzen's integrated Radeon. A device that is not available at runtime
+falls back to CPU with a logged warning, never an error.
+
+Three roles can run on different devices with one model file loaded once:
+
+| setting | role | guidance |
+|---|---|---|
+| `device` | steady-state document embedding (the trickle of changed files) | the idle integrated GPU is enough here and keeps the CPU free |
+| `bulk_device` | document embedding while a full build runs or more than `bulk_threshold` jobs are pending | the fastest device you have; the first pass is throughput-bound |
+| `query_device` | query embedding (one short text per search) | CPU has the lowest latency for a single text |
+
+Measured on this workstation (fp32, 1,800-character chunks, batch 8; vectors agree across
+devices to 1e-7):
+
+| device | bge-small chunks/s | bge-base chunks/s | query latency (small) |
+|---|---|---|---|
+| CPU (Ryzen 7 7800X3D, 16 threads) | 26 | 7.6 | 2.9 ms |
+| `dml:1` integrated Radeon | 6.9 | 3.3 | 8.0 ms |
+| `dml:0` RTX 4080 | 254 (batch 32) | 156 (batch 32) | 13.9 ms (launch overhead) |
+
+Recommended on this machine:
+
+```yaml
+embedding:
+  device: dml:1          # integrated GPU: ~7 chunks/s, zero CPU load, idle otherwise
+  bulk_device: dml:0     # RTX 4080 for the first pass and big backlogs
+  query_device: cpu
+```
+
+With that policy a modified 10-chunk document costs about 1.5 s on the integrated GPU, a full
+first pass over ~500k chunks about 35 minutes on the 4080 (versus ~5 h on CPU, ~20 h on the
+integrated GPU), and a query stays at a few milliseconds.
+
+## Running as a background service
+
+The server is a plain console process (`semsearch --serve`). To keep it running at logon
+create a Scheduled Task (`schtasks /Create /SC ONLOGON /TN semsearch /TR "...\.venv\Scripts\semsearch-serve.exe"`)
+or a shortcut in `shell:startup`. No elevation is needed. Do not run it as SYSTEM: the index
+should see exactly the files your account can read.

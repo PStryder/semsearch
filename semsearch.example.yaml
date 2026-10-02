@@ -1,0 +1,37 @@
+# Copy to semsearch.yaml (or %LOCALAPPDATA%\semsearch\semsearch.yaml) and edit roots.
+data_dir: "%LOCALAPPDATA%/semsearch"
+roots:
+  - "F:/HexyLab"
+# excludes extend nothing: this list REPLACES the defaults when present. The defaults cover
+# .git, node_modules, .venv/venv, __pycache__, caches, dist/build/bin/obj/target, site-packages,
+# minified bundles and lockfiles. Uncomment to customize.
+# excludes:
+#   - "**/.git/**"
+#   - "**/node_modules/**"
+#   - "**/.venv/**"
+#   - "**/site-packages/**"
+#   - "**/amoeba-models/**"
+embedding:
+  provider: onnx
+  model: BAAI/bge-small-en-v1.5
+  # Device policy for this workstation (requires `uv sync --extra dml`):
+  device: dml:1          # integrated Radeon for the steady trickle of changed files (CPU stays idle)
+  bulk_device: dml:0     # RTX 4080 for the first full pass and large backlogs
+  query_device: cpu      # lowest latency for a single query text
+  bulk_threshold: 500
+  batch_size: 32
+api:
+  host: 127.0.0.1
+  port: 8765
+indexing:
+  use_windows_search: true
+  poll_interval_s: 30
+  reconcile_interval_s: 3600
+  watch_filesystem: true
+  max_file_bytes: 52428800
+retrieval:
+  default_mode: hybrid
+  fusion: convex
+  semantic_weight: 0.6
+  lexical_weight: 0.4
+log_level: INFO
