@@ -1,0 +1,220 @@
+{
+ "tag": "VirtualAccount",
+ "started": 1790971850.1349573,
+ "python": "C:\\ProgramData\\SemSearchProbe\\venv\\Scripts\\python.exe",
+ "identity": {
+  "ok": true,
+  "value": {
+   "user": "SemSearchProbe",
+   "domain_user": "NT SERVICE\\SemSearchProbe",
+   "session": 0,
+   "userprofile": "C:\\WINDOWS\\ServiceProfiles\\SemSearchProbe",
+   "temp": "C:\\WINDOWS\\SERVIC~1\\SEMSEA~1\\AppData\\Local\\Temp",
+   "localappdata": "C:\\WINDOWS\\ServiceProfiles\\SemSearchProbe\\AppData\\Local"
+  }
+ },
+ "hkcu": {
+  "ok": false,
+  "error": "FileNotFoundError: [WinError 2] The system cannot find the file specified"
+ },
+ "filesystem": {
+  "F:\\HexyLab\\semsearch\\eval\\corpus": {
+   "ok": true,
+   "value": {
+    "entries": 15,
+    "read_first_file_bytes": null,
+    "first": null
+   }
+  },
+  "C:\\Users\\pstry\\Documents": {
+   "ok": false,
+   "error": "PermissionError: [WinError 5] Access is denied: 'C:\\\\Users\\\\pstry\\\\Documents'"
+  },
+  "F:\\Personal OneDrive\\OneDrive": {
+   "ok": true,
+   "value": {
+    "entries": 10,
+    "read_first_file_bytes": 63,
+    "first": "F:\\Personal OneDrive\\OneDrive\\.849C9593-D756-4E56-8D6E-42412F2A707B"
+   }
+  },
+  "F:\\HexyLab": {
+   "ok": true,
+   "value": {
+    "entries": 118,
+    "read_first_file_bytes": 4096,
+    "first": "F:\\HexyLab\\# Compression tastes like red - qua.txt"
+   }
+  }
+ },
+ "windows_search": {
+  "ping": {
+   "ok": true,
+   "value": true
+  },
+  "catalog": {
+   "ok": true,
+   "value": {
+    "available": true,
+    "indexer_version": "10.0.26100.9444",
+    "status": "idle",
+    "paused_reason": "none",
+    "items": 426649,
+    "to_index": {
+     "incremental": 0,
+     "notification": 0,
+     "high_priority": 0
+    },
+    "url_being_indexed": ""
+   }
+  },
+  "covers": {
+   "F:\\HexyLab\\semsearch\\eval\\corpus": {
+    "ok": true,
+    "value": false
+   },
+   "C:\\Users\\pstry\\Documents": {
+    "ok": true,
+    "value": false
+   },
+   "F:\\Personal OneDrive\\OneDrive": {
+    "ok": true,
+    "value": true
+   }
+  },
+  "count_eval_corpus": {
+   "ok": true,
+   "value": 0
+  },
+  "count_documents_profile": {
+   "ok": true,
+   "value": 0
+  },
+  "count_onedrive": {
+   "ok": true,
+   "value": 4873
+  },
+  "freetext": {
+   "ok": true,
+   "value": []
+  }
+ },
+ "watcher": {
+  "ok": true,
+  "value": {
+   "alive": true,
+   "events": [
+    [
+     "changed",
+     "x.txt"
+    ]
+   ]
+  }
+ },
+ "adapters": [
+  {
+   "ordinal": 0,
+   "name": "AMD Radeon(TM) Graphics",
+   "vendor_id": 4098,
+   "device_id": 5710,
+   "subsys_id": 2104497250,
+   "revision": 203,
+   "dedicated_vram_mb": 485,
+   "shared_memory_mb": 48283,
+   "luid": "00000000-000136e7",
+   "software": false,
+   "integrated": true,
+   "address": "pci:22.0.0",
+   "vendor": "amd",
+   "stable_id": "1002:164e:7d701462@pci:22.0.0"
+  },
+  {
+   "ordinal": 1,
+   "name": "NVIDIA GeForce RTX 4080",
+   "vendor_id": 4318,
+   "device_id": 9988,
+   "subsys_id": 1360139362,
+   "revision": 161,
+   "dedicated_vram_mb": 16048,
+   "shared_memory_mb": 48283,
+   "luid": "00000000-000122ae",
+   "software": false,
+   "integrated": false,
+   "address": "pci:1.0.0",
+   "vendor": "nvidia",
+   "stable_id": "10de:2704:51121462@pci:1.0.0"
+  },
+  {
+   "ordinal": 2,
+   "name": "Microsoft Basic Render Driver",
+   "vendor_id": 5140,
+   "device_id": 140,
+   "subsys_id": 0,
+   "revision": 0,
+   "dedicated_vram_mb": 0,
+   "shared_memory_mb": 48283,
+   "luid": "00000000-0001369e",
+   "software": true,
+   "integrated": true,
+   "address": null,
+   "vendor": "microsoft",
+   "stable_id": "1414:008c:00000000"
+  }
+ ],
+ "ort_providers": [
+  "DmlExecutionProvider",
+  "CPUExecutionProvider"
+ ],
+ "embedding": {
+  "cpu": {
+   "ok": true,
+   "value": {
+    "resolved": "cpu",
+    "chunks_per_s": 22.6,
+    "dim": 384,
+    "norm": 0.9999999403953552
+   }
+  },
+  "dml:0": {
+   "ok": true,
+   "value": {
+    "resolved": "dml:0",
+    "chunks_per_s": 5.0,
+    "dim": 384,
+    "norm": 1.0000001192092896
+   }
+  },
+  "dml:1": {
+   "ok": true,
+   "value": {
+    "resolved": "dml:1",
+    "chunks_per_s": 169.2,
+    "dim": 384,
+    "norm": 1.0000001192092896
+   }
+  }
+ },
+ "ifilter_docx": {
+  "ok": true,
+  "value": {
+   "status": "ok",
+   "chars": 13048
+  }
+ },
+ "isolated_extractor": {
+  "ok": true,
+  "value": {
+   "status": "ok",
+   "method": "ifilter:LoadIFilter",
+   "chars": 13048
+  }
+ },
+ "store": {
+  "ok": true,
+  "value": {
+   "journal": "wal",
+   "vec": "v0.1.9"
+  }
+ },
+ "finished": 1790971865.225238
+}

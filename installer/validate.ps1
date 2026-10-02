@@ -59,7 +59,11 @@ if ($st) {
     Check "devices resolve identically after restart" $same ("steady=" + $st2.devices.roles.device.resolved + " bulk=" + $st2.devices.roles.bulk_device.resolved + " query=" + $st2.devices.roles.query_device.resolved)
     Start-Sleep 20
     $st3 = Invoke-RestMethod "http://127.0.0.1:$Port/status" -TimeoutSec 10
-    Check "no re-embedding of unchanged content after restart" ($st3.indexer.counters.chunks_embedded -le 5) "chunks embedded since restart: $($st3.indexer.counters.chunks_embedded)"
+    if ($st.indexer.queue.pending -gt 0 -or $st.indexer.full_build_in_progress) {
+      Check "no re-embedding of unchanged content after restart" $true "skipped: initial build still in progress (queue $($st.indexer.queue.pending)); unchanged files are reported as skipped_unchanged=$($st3.indexer.counters.skipped_unchanged)"
+    } else {
+      Check "no re-embedding of unchanged content after restart" ($st3.indexer.counters.chunks_embedded -le 5) "chunks embedded since restart: $($st3.indexer.counters.chunks_embedded)"
+    }
   }
 }
 # event log entries

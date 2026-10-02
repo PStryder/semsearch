@@ -8,9 +8,17 @@ security boundary are unchanged from the development mode described in the other
 ## Service host
 
 semsearch runs as a native SCM service hosted in its own packaged CPython runtime
-(`%ProgramFiles%\SemSearch\venv\Scripts\pythonw.exe -m semsearch.service`). There is no
-console window, no NSSM/WinSW shim and no dependency on any Python installed on the machine.
-The service class (`src/semsearch/service.py`) implements the SCM contract directly:
+(`%ProgramFiles%\SemSearch\python\cpython-3.12...\pythonw.exe -m semsearch.service`). There is
+no console window, no NSSM/WinSW shim and no dependency on any Python installed on the
+machine. The service class (`src/semsearch/service.py`) implements the SCM contract directly:
+
+Two Session-0 facts shaped the host, both found by running it as a service rather than
+assuming: a venv's `python.exe` on Windows is a launcher that spawns the real interpreter as a
+child, which the Service Control Manager logs as "a service process other than the one
+launched connected" and which breaks process accounting on stop, so the runtime has no venv
+layer and the binary is the real `pythonw.exe`; and a windowless process has
+`sys.stdout = None`, which uvicorn's default logging configuration trips over, so the host
+installs null standard streams and keeps its own logging configuration.
 
 | Behaviour | Implementation |
 |---|---|
@@ -34,18 +42,86 @@ filesystem access to the configured roots, the ReadDirectoryChangesW watcher, Di
 adapters, the IFilter COM path, the isolated extractor child, and SQLite/sqlite-vec in
 `%ProgramData%`.
 
-RESULTS_TABLE_PLACEHOLDER
+Measured 2026-10-02 (full reports in `probes/results/`; the `interactive` column is the
+same probe run from the logged-in desktop session):
+
+| check | interactive (pstry, session 1) | LocalSystem | LocalService | NetworkService | NT SERVICE\SemSearchProbe (virtual account) |
+|---|---|---|---|---|---|
+| session | 1 | 0 | 0 | 0 | 0 |
+| HKCU / user profile | yes | none | none | none | none |
+| read `F:\HexyLab` (Users:RX) | ok | ok | ok | ok | ok (after installer-style grant) |
+| read `C:\Users\pstry\Documents` | ok | ok | **denied** | **denied** | **denied** (no grant was made for the probe) |
+| read `F:\Personal OneDrive\OneDrive` | ok | ok | ok | ok | ok |
+| Windows Search OLE DB ping | ok | ok | ok | ok | ok |
+| Windows Search items under Documents | 38,402 | 38,402 | 0 | 0 | 0 |
+| Windows Search items under OneDrive | 4,873 | 4,873 | 4,873 | 4,873 | 4,873 |
+| Windows Search catalog COM | idle | idle | idle | idle | idle |
+| ReadDirectoryChangesW watcher | event | event | event | event | event |
+| DXGI order (ordinal: adapter) | 0: RTX 4080, 1: Radeon | **0: Radeon, 1: RTX 4080** | 0: Radeon, 1: RTX 4080 | 0: Radeon, 1: RTX 4080 | 0: Radeon, 1: RTX 4080 |
+| embed on RTX 4080 (bge-small, batch 32) | 150 chunks/s | 168 | 155 | 159 | 169 |
+| embed on integrated Radeon | 4.8 chunks/s | 4.8 | 4.9 | 5.1 | 5.0 |
+| embed on CPU | 18 chunks/s | 22 | 22 | 22 | 23 |
+| IFilter (in-process COM) on .docx | ok | ok | ok | ok | ok |
+| isolated extractor child process | ok | ok | ok | ok | ok |
+| SQLite WAL + sqlite-vec in `%ProgramData%` | ok | ok | ok | ok | ok |
+
+What this says:
+
+1. **Windows Search does not need a user profile or an interactive session.** The OLE DB
+   provider and the catalog COM interface work from Session 0 under every identity, and the
+   watcher, both GPUs, IFilters and the extractor child all behave as they do interactively.
+2. **Windows Search results are security-trimmed to the calling identity.** An account that
+   cannot read `C:\Users\pstry\Documents` on NTFS gets zero Search results for it, while the
+   OneDrive folder on F: (readable by Users) returns identical counts for everyone. So the
+   service sees exactly the files its account can read: no more, no less.
+3. **DXGI adapter order is different in Session 0 than on the desktop** (Radeon first instead
+   of the RTX 4080). A config written as `dml:0` / `dml:1` from a terminal would have run
+   steady-state embedding on the 4080 and bulk work on the integrated GPU the moment it ran
+   as a service. This is why roles are resolved by stable adapter identity inside the service
+   process, never by ordinal.
+4. The `HKCU` failure is irrelevant: nothing in semsearch reads per-user registry, and the
+   model cache is redirected to `%ProgramData%\SemSearch\models`.
 
 ### Decision
 
-IDENTITY_DECISION_PLACEHOLDER
+The service runs as the **virtual service account `NT SERVICE\SemSearch`**, and the
+installer grants that account read-only access (`(OI)(CI)RX`) on each configured root.
+
+Why this one:
+
+- It is the least-privileged option that preserves the behaviour we need. Everything
+  measured above works under it, and Windows Search's security trimming makes its results
+  exactly consistent with the NTFS grants, so what the index contains is governed by one
+  explicit, auditable ACL per root.
+- It has **no password**: the SCM manages the identity, so nothing is stored and nothing
+  expires. The user's own account would give the same view of the files, but a service
+  logging on as a user needs that user's password in the SCM (and "Log on as a service"),
+  and breaks on password change. That option is documented below for people who want
+  exactly the interactive view of everything, but it is not the default.
+- **LocalSystem was rejected** although it is the most convenient: it reads every file on
+  the machine, so a bug anywhere in the extraction path or the API would expose every
+  user's documents, and Windows Search would return other users' profiles too. Search
+  authority must not imply read authority over the whole machine.
+- LocalService and NetworkService behave identically to the virtual account in the
+  measurements, but they are shared with other Windows services; a per-service virtual
+  account keeps ACL grants attributable to semsearch alone and is removed with it.
+
+Consequence to know about: adding a root that lives inside a user profile (for example
+`C:\Users\you\Documents`) requires the read grant, which the installer applies when the root
+is listed at install time (`-Roots`), or re-run `install.ps1` after editing the config. The
+grant is a read-only ACE for `NT SERVICE\SemSearch`; `uninstall.ps1` removes the account,
+which invalidates the ACE.
+
+Alternative: `.\install.ps1 -Account DOMAIN\you` installs the service under your own
+account (you will be prompted by the SCM for the password via `sc config`, and the account
+needs the "Log on as a service" right). Use this only if you need Search results for
+locations you do not want to grant explicitly.
 
 ## File layout
 
 | Location | Contents | Written by |
 |---|---|---|
-| `%ProgramFiles%\SemSearch\python\` | relocatable CPython (python-build-standalone, managed by uv) | installer only |
-| `%ProgramFiles%\SemSearch\venv\` | virtual environment: semsearch + dependencies incl. `onnxruntime-directml`, `sqlite-vec`, pywin32 | installer only |
+| `%ProgramFiles%\SemSearch\python\` | relocatable CPython (python-build-standalone) with semsearch and every dependency (`onnxruntime-directml`, `sqlite-vec`, pywin32, parsers) installed into its own `site-packages`; the service binary is its `pythonw.exe` | installer only |
 | `%ProgramFiles%\SemSearch\semsearch.cmd` | operator CLI wrapper (install dir is added to the machine PATH) | installer only |
 | `%ProgramData%\SemSearch\semsearch.yaml` | configuration; written once, never overwritten by upgrades | installer (first time), operator |
 | `%ProgramData%\SemSearch\index\` | `semsearch.db` + WAL (documents, chunks, FTS5, vectors, job queue) | service |

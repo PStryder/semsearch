@@ -26,7 +26,8 @@ function Fail($m) { Write-Host "ERROR: $m" -ForegroundColor Red; exit 1 }
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Fail "run this from an elevated PowerShell" }
 $src = $PSScriptRoot
-if (-not (Test-Path "$src\venv\Scripts\python.exe") -or -not (Test-Path "$src\python")) { Fail "run install.ps1 from inside a staged release directory (build_release.ps1)" }
+$srcPy = (Get-ChildItem "$src\python\cpython-*\python.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
+if (-not $srcPy) { Fail "run install.ps1 from inside a staged release directory (build_release.ps1)" }
 $version = (Get-Content "$src\VERSION").Trim()
 $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 19041) { Fail "Windows 10 2004 / Windows 11 required (build $($os.BuildNumber))" }
@@ -43,7 +44,12 @@ Step "SemSearch $version -> $InstallDir  (data: $DataDir, service account: $Acco
 $existing = Get-Service $svc -ErrorAction SilentlyContinue
 if ($existing) {
   Step "stopping existing service"
+  # disable failure recovery first: otherwise a pending 'restart after failure' can relaunch the
+  # service in the middle of the runtime copy (seen in testing: it started with half the packages)
+  sc.exe failure $svc reset= 0 actions= "" | Out-Null
+  sc.exe config $svc start= disabled | Out-Null
   if ($existing.Status -ne 'Stopped') { Stop-Service $svc -Force -ErrorAction SilentlyContinue; (Get-Service $svc).WaitForStatus('Stopped', (New-TimeSpan -Seconds 90)) }
+  Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe' or Name = 'python.exe'" | Where-Object { $_.CommandLine -like '*semsearch.service*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
 # ---- runtime: replace binaries, never touch data ----
@@ -55,19 +61,15 @@ if (Test-Path $InstallDir) {
 }
 New-Item -ItemType Directory -Force $InstallDir | Out-Null
 Copy-Item "$src\python" "$InstallDir\python" -Recurse
-Copy-Item "$src\venv" "$InstallDir\venv" -Recurse
 Copy-Item "$src\VERSION" "$InstallDir\VERSION"
-Copy-Item "$src\install.ps1", "$src\uninstall.ps1", "$src\validate.ps1" "$InstallDir\"
-# re-point the venv at the installed base interpreter
-$base = (Get-ChildItem "$InstallDir\python\cpython-*\python.exe" | Select-Object -First 1).FullName
-$cfgv = Get-Content "$InstallDir\venv\pyvenv.cfg"
-$cfgv = $cfgv | ForEach-Object { if ($_ -match '^home = ') { "home = " + (Split-Path $base) } else { $_ } }
-Set-Content "$InstallDir\venv\pyvenv.cfg" $cfgv -Encoding ascii
-$py = "$InstallDir\venv\Scripts\python.exe"
-& $py -c "import semsearch, onnxruntime; print('runtime', semsearch.__version__, onnxruntime.get_available_providers())"
-if ($LASTEXITCODE -ne 0) { Fail "installed runtime does not import" }
+Copy-Item "$src\install.ps1", "$src\uninstall.ps1", "$src\validate.ps1", "$src\verify_runtime.py" "$InstallDir\"
+# the service is hosted by the real interpreter (pythonw.exe beside it), never a venv launcher
+$py = (Get-ChildItem "$InstallDir\python\cpython-*\python.exe" | Select-Object -First 1).FullName
+# -s everywhere: the runtime must never see a user's %APPDATA%\Python site-packages (the service account has none)
+& $py -s "$InstallDir\verify_runtime.py"
+if ($LASTEXITCODE -ne 0) { Fail "installed runtime failed verification" }
 # a 'semsearch' command for operators: wrapper in the install dir (added to the machine PATH)
-Set-Content "$InstallDir\semsearch.cmd" "@echo off`r`n`"$InstallDir\venv\Scripts\python.exe`" -m semsearch.cli %*" -Encoding ascii
+Set-Content "$InstallDir\semsearch.cmd" "@echo off`r`n`"$py`" -s -m semsearch.cli %*" -Encoding ascii
 $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 if ($machinePath -notlike "*$InstallDir*") { [Environment]::SetEnvironmentVariable("Path", "$machinePath;$InstallDir", "Machine") }
 # install dir: read/execute for everyone, write for admins only (defaults of Program Files already do this)
@@ -80,7 +82,7 @@ foreach ($d in @("$DataDir", "$DataDir\index", "$DataDir\state", "$DataDir\logs"
 $cfgPath = "$DataDir\semsearch.yaml"
 if (-not (Test-Path $cfgPath)) {
   Step "writing initial configuration"
-  $gpuJson = & $py -c "import json; from semsearch.devices import enumerate_adapters, selector_for; print(json.dumps([{'name': a.name, 'integrated': a.integrated, 'software': a.software, 'selector': selector_for(a)} for a in enumerate_adapters()]))"
+  $gpuJson = & $py -s -c "import json; from semsearch.devices import enumerate_adapters, selector_for; print(json.dumps([{'name': a.name, 'integrated': a.integrated, 'software': a.software, 'selector': selector_for(a)} for a in enumerate_adapters()]))"
   $gpus = @()
   if ($LASTEXITCODE -eq 0 -and $gpuJson) { $gpus = $gpuJson | ConvertFrom-Json }
   $devices = @()
@@ -128,23 +130,28 @@ log_level: INFO
 # ---- model: pre-fetch into the machine cache so the service never needs the operator's profile ----
 Step "ensuring embedding model is cached under $DataDir\models"
 $env:HF_HOME = "$DataDir\models"
-& $py -c "from semsearch.config import load_config; from semsearch.embed.onnx_provider import _resolve_model_files; c=load_config(r'$cfgPath'); print(_resolve_model_files(c.embedding.model, c.embedding.revision, True)[0])"
+& $py -s -c "from semsearch.config import load_config; from semsearch.embed.onnx_provider import _resolve_model_files; c=load_config(r'$cfgPath'); print(_resolve_model_files(c.embedding.model, c.embedding.revision, True)[0])"
 if ($LASTEXITCODE -ne 0) { Fail "could not fetch the embedding model (network needed once; or place the files locally and set embedding.model to that directory)" }
 
 # ---- GPU / DirectML validation ----
 if (-not $SkipGpuCheck) {
   Step "validating accelerators"
-  & $py -m semsearch.cli devices
-  & $py -c "from semsearch.config import load_config; from semsearch.app_state import resolve_devices; cfg, rep = resolve_devices(load_config(r'$cfgPath')); [print('  %-13s %-16s -> %-7s %s' % (k, v['configured'], v['resolved'], v['why'])) for k, v in rep['roles'].items()]"
+  & $py -s -m semsearch.cli devices
+  & $py -s -c "from semsearch.config import load_config; from semsearch.app_state import resolve_devices; cfg, rep = resolve_devices(load_config(r'$cfgPath')); [print('  %-13s %-16s -> %-7s %s' % (k, v['configured'], v['resolved'], v['why'])) for k, v in rep['roles'].items()]"
 }
 
 # ---- service registration ----
 Step "registering service"
 $acct = $Account
+if ($Account -notmatch '^(LocalSystem|NT AUTHORITY\\|NT SERVICE\\)') {
+  Write-Host "service will log on as user account $Account; sc.exe will need its password and the account the 'Log on as a service' right" -ForegroundColor Yellow
+}
+# PowerShell 5.1 turns any native stderr output into a terminating error under Stop; native
+# tools below are allowed to write to stderr, their exit codes are checked explicitly
+$ErrorActionPreference = "Continue"
 # icacls spelling of the account (sc.exe accepts 'LocalSystem'; ACLs need the SID-resolvable name)
 $aclAcct = switch -Regex ($Account) { '^LocalSystem$' { 'NT AUTHORITY\SYSTEM' } '^NT AUTHORITY\\LocalService$' { 'NT AUTHORITY\LOCAL SERVICE' } '^NT AUTHORITY\\NetworkService$' { 'NT AUTHORITY\NETWORK SERVICE' } default { $Account } }
-& $py -m semsearch.service remove 2>$null | Out-Null
-& $py -m semsearch.service install --account $acct --start delayed
+& $py -s -m semsearch.service install --account $acct --start delayed
 if ($LASTEXITCODE -ne 0) { Fail "service registration failed" }
 # recovery: restart after failure, with back-off; reset the failure count after a day
 sc.exe failure $svc reset= 86400 actions= restart/5000/restart/30000/restart/120000 | Out-Null
@@ -162,16 +169,20 @@ if ($sd -notmatch [regex]::Escape($opSid)) {
   sc.exe sdset $svc $sd | Out-Null
 }
 # the service account needs READ on every root (virtual accounts have no rights by default)
-$roots = & $py -c "from semsearch.config import load_config; [print(str(r)) for r in load_config(r'$cfgPath').roots]"
+$roots = & $py -s -c "from semsearch.config import load_config; [print(str(r)) for r in load_config(r'$cfgPath').roots]"
 foreach ($r in $roots) {
-  if (Test-Path $r) { Step "granting $acct read access to root $r"; icacls $r /grant "${aclAcct}:(OI)(CI)RX" /T /Q | Out-Null } else { Write-Warning "root does not exist yet: $r" }
+  # one inheritable ACE on the root directory (no /T: that would rewrite every file's ACL explicitly and take minutes on
+  # large trees; the inheritable entry propagates on its own, and files that block inheritance are not indexable anyway)
+  if (Test-Path $r) { Step "granting $acct read access to root $r"; icacls $r /grant "${aclAcct}:(OI)(CI)RX" /Q | Out-Null } else { Write-Warning "root does not exist yet: $r" }
 }
 
 # ---- start and verify ----
 if ($NoStart) { Step "installed (not started). Start with: semsearch service start"; exit 0 }
 Step "starting service"
-Start-Service $svc
-(Get-Service $svc).WaitForStatus('Running', (New-TimeSpan -Seconds 240))
+$ErrorActionPreference = "Stop"
+try { Start-Service $svc; (Get-Service $svc).WaitForStatus('Running', (New-TimeSpan -Seconds 240)) }
+catch { Write-Host "service did not reach Running: $_" -ForegroundColor Red; Write-Host "--- last log lines:"; Get-Content "$DataDir\logs\semsearch.log" -Tail 30 -ErrorAction SilentlyContinue; Get-WinEvent -FilterHashtable @{LogName='Application'; ProviderName='SemSearch'} -MaxEvents 5 -ErrorAction SilentlyContinue | ForEach-Object { $_.Message.Substring(0, [Math]::Min(400, $_.Message.Length)) }; exit 2 }
+$ErrorActionPreference = "Continue"
 Step "waiting for health"
 $ok = $false
 for ($i = 0; $i -lt 60; $i++) {

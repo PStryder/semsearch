@@ -1,6 +1,6 @@
 # Builds a self-contained release directory: dist\SemSearch-<version>\
-#   python\      python-build-standalone CPython (relocatable), managed by uv
-#   venv\        virtual environment over it with semsearch[dml] and all dependencies
+#   python\      python-build-standalone CPython (relocatable) with semsearch[dml] and all
+#                dependencies installed into its own site-packages (no venv layer)
 #   installer\   install.ps1 / uninstall.ps1 / validate.ps1
 #   VERSION
 # Run from the repo root (unelevated). Requires uv.
@@ -27,17 +27,22 @@ uv python install $Python --install-dir "$out\python" | Out-Null
 $base = (Get-ChildItem "$out\python\cpython-$Python*\python.exe" | Select-Object -First 1).FullName
 if (-not $base) { throw "standalone python not found under $out\python" }
 
-"[3/5] creating venv and installing semsearch[$Extra]"
-uv venv --python $base "$out\venv" -q
-uv pip install --python "$out\venv\Scripts\python.exe" -q "$($wheel.FullName)[$Extra]"
+"[3/5] installing semsearch[$Extra] directly into the runtime (no venv: a venv's python.exe is a launcher that"
+"      spawns a child interpreter, which the Service Control Manager treats as a foreign process)"
+# the standalone build carries a PEP 668 marker meant for OS-managed interpreters; this copy is ours
+Remove-Item (Join-Path (Split-Path $base) "Lib\EXTERNALLY-MANAGED") -ErrorAction SilentlyContinue
+# -s: ignore the building user's site-packages (%APPDATA%\Python); otherwise pip reports packages
+# found there as "already satisfied" and leaves them out of the runtime (bit us with `tokenizers`)
+& $base -s -m ensurepip --default-pip | Out-Null
+& $base -s -m pip install -q --no-warn-script-location "$($wheel.FullName)[$Extra]"
+if ($LASTEXITCODE -ne 0) { throw "pip install into the runtime failed" }
 
-"[4/5] verifying the packaged runtime (native dependencies)"
-& "$out\venv\Scripts\python.exe" "$repo\installer\verify_runtime.py"
+"[4/5] verifying the packaged runtime (native dependencies, user site-packages disabled)"
+& $base -s "$repo\installer\verify_runtime.py"
 if ($LASTEXITCODE -ne 0) { throw "packaged runtime verification failed" }
 
 "[5/5] copying installer scripts"
 Copy-Item "$repo\installer\install.ps1", "$repo\installer\uninstall.ps1", "$repo\installer\validate.ps1", "$repo\installer\verify_runtime.py", "$repo\installer\README.md" "$out\" -Force
 Copy-Item "$repo\semsearch.example.yaml" "$out\semsearch.example.yaml"
 Set-Content "$out\VERSION" $version -Encoding ascii
-# the venv's pyvenv.cfg points at the staged python; install.ps1 rewrites it for the final location
 "release staged: $out"
