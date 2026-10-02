@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
+from typing import Any
 
 DEFAULT_TEXT_EXTENSIONS = [
     ".txt", ".md", ".markdown", ".rst", ".log", ".csv", ".tsv", ".vtt", ".srt",
@@ -47,15 +48,32 @@ class EmbeddingConfig(BaseModel):
     provider: Literal["onnx", "sentence-transformers", "hashing"] = "onnx"
     model: str = "BAAI/bge-small-en-v1.5"
     revision: str | None = None
-    # Devices are "cpu", "cuda[:id]", "dml[:id]" or "auto". `device` embeds documents in steady
-    # state; `bulk_device` takes over during a full build or when the queue is deep (so a fast
-    # GPU can do the first pass while an idle integrated GPU handles the trickle afterwards);
-    # `query_device` embeds search queries (latency matters more than throughput there).
-    # "same" means: same as `device`.
+    # Devices are "cpu", "cuda[:id]", "dml[:id]", "auto", or a logical name defined under
+    # `devices` (resolved to the current DirectML ordinal at startup by stable adapter identity).
+    # `device` (alias: steady_state_device) embeds documents in steady state; `bulk_device` takes
+    # over during a full build or when the queue is deep; `query_device` embeds search queries.
+    # "same" means: same as `device`. A named device that is not present falls back to
+    # `fallback_device` with a logged warning; the service never refuses to start over a GPU.
     device: str = "cpu"
     bulk_device: str = "same"
     query_device: str = "same"
+    fallback_device: str = "cpu"
+    devices: dict[str, dict[str, Any]] = Field(default_factory=lambda: {
+        # generic selectors that work on most machines; the installer rewrites them with the exact
+        # vendor/device/subsystem ids and PCI address of the adapters it finds
+        "integrated-gpu": {"integrated": True},
+        "discrete-gpu": {"integrated": False},
+    })
     bulk_threshold: int = 500  # queue depth (pending jobs) above which bulk_device is used
+    cache_dir: Path | None = None  # Hugging Face cache for model files (default: <data_dir>/models)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _aliases(cls, v):
+        if isinstance(v, dict) and "steady_state_device" in v:
+            v = dict(v)
+            v.setdefault("device", v.pop("steady_state_device"))
+        return v
     batch_size: int = 32
     max_seq_length: int = 512
     pooling: Literal["cls", "mean"] = "cls"
@@ -97,6 +115,18 @@ class IndexingConfig(BaseModel):
     fs_poll_interval_s: float = 600.0     # roots NOT covered by Windows Search are mtime-scanned at most this often
     skip_suspected_secrets: bool = True   # refuse to index text that contains private keys / API tokens
     reconcile_min_fraction: float = 0.5   # skip tombstoning when an enumeration returns fewer than this fraction of known docs
+    startup_reconcile_delay_s: float = 600.0  # first full reconcile this long after start (incremental runs immediately)
+    low_priority: bool = True             # run the process at below-normal CPU priority (background work)
+
+
+class ServiceConfig(BaseModel):
+    name: str = "SemSearch"
+    display_name: str = "Semantic Search (semsearch)"
+    shutdown_timeout_s: float = 30.0      # bounded: indexer stop + API drain
+    startup_timeout_s: float = 180.0      # model load + store open + API bind before SCM gives up
+    event_log: bool = True                # mirror WARNING+ and lifecycle events to the Windows Application log
+    integrity_check: Literal["quick", "none"] = "quick"  # SQLite quick_check on open (bounded by max_check_mb)
+    integrity_check_max_mb: int = 4096
 
 
 class RetrievalConfig(BaseModel):
@@ -114,6 +144,10 @@ class RetrievalConfig(BaseModel):
 
 class Config(BaseModel):
     data_dir: Path = Field(default_factory=lambda: Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "semsearch")
+    # sub-locations default under data_dir; the service install sets data_dir=%ProgramData%\SemSearch
+    index_dir: Path | None = None   # <data_dir>/index   (semsearch.db + WAL)
+    state_dir: Path | None = None   # <data_dir>/state   (admin token, resolved devices, markers)
+    log_dir_override: Path | None = Field(default=None, alias="log_dir")  # <data_dir>/logs
     roots: list[Path] = Field(default_factory=list)
     excludes: list[str] = Field(default_factory=lambda: list(DEFAULT_EXCLUDES))
     text_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_TEXT_EXTENSIONS))
@@ -124,8 +158,30 @@ class Config(BaseModel):
     api: ApiConfig = Field(default_factory=ApiConfig)
     indexing: IndexingConfig = Field(default_factory=IndexingConfig)
     retrieval: RetrievalConfig = Field(default_factory=RetrievalConfig)
+    service: ServiceConfig = Field(default_factory=ServiceConfig)
     log_level: str = "INFO"
     source_path: Path | None = None  # where the config was loaded from (not persisted)
+
+    model_config = {"populate_by_name": True}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _server_alias(cls, v):
+        # `server:` is the production spelling of `api:`
+        if isinstance(v, dict) and "server" in v:
+            v = dict(v)
+            srv = v.pop("server") or {}
+            api = dict(v.get("api") or {})
+            api.update(srv)
+            v["api"] = api
+        return v
+
+    @field_validator("log_level")
+    @classmethod
+    def _level(cls, v: str) -> str:
+        if str(v).upper() not in ("DEBUG", "INFO", "WARNING", "ERROR"):
+            raise ValueError("log_level must be DEBUG, INFO, WARNING or ERROR")
+        return str(v).upper()
 
     @field_validator("roots", mode="before")
     @classmethod
@@ -139,12 +195,55 @@ class Config(BaseModel):
         return os.path.expandvars(os.path.expanduser(str(v)))
 
     @property
+    def index_path(self) -> Path:
+        return Path(os.path.expandvars(str(self.index_dir))) if self.index_dir else self.data_dir / "index"
+
+    @property
+    def state_path(self) -> Path:
+        return Path(os.path.expandvars(str(self.state_dir))) if self.state_dir else self.data_dir / "state"
+
+    @property
     def db_path(self) -> Path:
-        return self.data_dir / "semsearch.db"
+        return self.index_path / "semsearch.db"
 
     @property
     def log_dir(self) -> Path:
-        return self.data_dir / "logs"
+        return Path(os.path.expandvars(str(self.log_dir_override))) if self.log_dir_override else self.data_dir / "logs"
+
+    @property
+    def model_cache_dir(self) -> Path:
+        return Path(os.path.expandvars(str(self.embedding.cache_dir))) if self.embedding.cache_dir else self.data_dir / "models"
+
+    def validate_for_startup(self) -> list[str]:
+        """Problems a human must fix before the service can do useful work. Returns messages;
+        empty means OK. Soft problems (a missing root) are returned as warnings by the caller."""
+        problems: list[str] = []
+        if not self.roots:
+            problems.append("no roots configured (roots: [...] in semsearch.yaml)")
+        for r in self.roots:
+            if not os.path.isabs(str(r)):
+                problems.append(f"root is not an absolute path: {r}")
+        if self.api.port < 1 or self.api.port > 65535:
+            problems.append(f"api.port out of range: {self.api.port}")
+        if self.api.host not in ("127.0.0.1", "localhost", "::1") and not self.api.allow_non_loopback:
+            problems.append(f"api.host {self.api.host!r} is not loopback; set api.allow_non_loopback: true to allow it")
+        if self.retrieval.semantic_weight < 0 or self.retrieval.lexical_weight < 0:
+            problems.append("retrieval weights must be non-negative")
+        if self.embedding.provider == "onnx":
+            from .embed.onnx_provider import parse_device
+            for role in ("device", "bulk_device", "query_device", "fallback_device"):
+                spec = getattr(self.embedding, role)
+                if spec == "same":
+                    continue
+                low = spec.lower()
+                if low in ("cpu", "auto") or low.startswith("cuda") or low.startswith("dml"):
+                    try:
+                        parse_device(spec)
+                    except ValueError:
+                        problems.append(f"embedding.{role}: malformed device {spec!r}")
+                elif spec not in self.embedding.devices:
+                    problems.append(f"embedding.{role}: '{spec}' is not cpu/cuda/dml/auto and not defined under embedding.devices")
+        return problems
 
     def all_extensions(self) -> set[str]:
         return {e.lower() for e in (self.text_extensions + self.document_extensions + self.extra_extensions)}
@@ -152,6 +251,14 @@ class Config(BaseModel):
     def normalized_roots(self) -> list[str]:
         from .security import normalize_path
         return [normalize_path(str(r)) for r in self.roots]
+
+
+class ConfigError(Exception):
+    """Malformed or unusable configuration; the message is meant for a human operator."""
+
+
+def machine_config_path() -> Path:
+    return Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "SemSearch" / "semsearch.yaml"
 
 
 def _candidate_paths(explicit: str | os.PathLike | None) -> list[Path]:
@@ -163,19 +270,29 @@ def _candidate_paths(explicit: str | os.PathLike | None) -> list[Path]:
         c.append(Path(env))
     c.append(Path.cwd() / "semsearch.yaml")
     c.append(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "semsearch" / "semsearch.yaml")
+    c.append(machine_config_path())  # the service install
     return c
 
 
 def load_config(path: str | os.PathLike | None = None) -> Config:
     for p in _candidate_paths(path):
         if p.is_file():
-            with open(p, "r", encoding="utf-8") as f:
-                data = yaml.safe_load(f) or {}
-            cfg = Config.model_validate(data)
+            try:
+                with open(p, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f) or {}
+            except yaml.YAMLError as e:
+                raise ConfigError(f"{p}: not valid YAML: {e}") from e
+            if not isinstance(data, dict):
+                raise ConfigError(f"{p}: top level must be a mapping")
+            try:
+                cfg = Config.model_validate(data)
+            except ValidationError as e:
+                lines = [f"{'.'.join(str(x) for x in err['loc'])}: {err['msg']}" for err in e.errors()]
+                raise ConfigError(f"{p}: {len(lines)} invalid setting(s):\n  " + "\n  ".join(lines)) from e
             cfg.source_path = p
             return cfg
         if path is not None and p == Path(path):
-            raise FileNotFoundError(f"config file not found: {p}")
+            raise ConfigError(f"config file not found: {p}")
     return Config()
 
 

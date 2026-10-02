@@ -8,3 +8,4 @@ _probe/
 *.db-wal
 *.db-shm
 semsearch-pytest-review-*/
+dist/

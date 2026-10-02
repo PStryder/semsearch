@@ -12,7 +12,9 @@ import time
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Query
+import secrets
+
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -86,6 +88,14 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     def st() -> AppState:
         return app.state.st
 
+    def require_admin(request: Request) -> None:
+        """Mutating / maintenance endpoints need the admin token from <state_dir>/admin.token.
+        Search, health, status and stats stay open to any local process."""
+        tok = request.headers.get("x-semsearch-token", "")
+        expected = getattr(st(), "admin_token", None)
+        if not expected or not secrets.compare_digest(tok, expected):
+            raise HTTPException(403, "admin token required (X-SemSearch-Token; see <state_dir>/admin.token)")
+
     @app.get("/health")
     def health():
         s = st()
@@ -111,9 +121,14 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     @app.get("/status")
     def status():
         s = st()
-        return {"indexer": s.indexer.status(), "windows_search": catalog_status() if s.windows is not None else {"available": False},
-                "store": {"path": str(cfg.db_path), "fingerprint": s.store.fingerprint, "dim": s.store.dim},
-                "config_source": str(cfg.source_path) if cfg.source_path else None}
+        return {"version": __version__,
+                "indexer": s.indexer.status(), "windows_search": catalog_status() if s.windows is not None else {"available": False},
+                "store": {"path": str(cfg.db_path), "fingerprint": s.store.fingerprint, "dim": s.store.dim,
+                          "schema_version": getattr(s, "store_info", {}).get("schema_version"),
+                          "recovered_from_corruption": getattr(s, "store_info", {}).get("recovered_from_corruption", False)},
+                "devices": getattr(s, "device_resolution", {}),
+                "config_source": str(cfg.source_path) if cfg.source_path else None,
+                "pid": os.getpid()}
 
     @app.get("/stats")
     def stats():
@@ -128,7 +143,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         return {"errors": st().store.recent_errors(limit)}
 
     @app.post("/index/path")
-    def index_path(req: PathRequest):
+    def index_path(req: PathRequest, _: None = Depends(require_admin)):
         try:
             return st().indexer.index_path(req.path, req.priority)
         except PathRejected as e:
@@ -137,11 +152,11 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             raise HTTPException(404, "path not found")
 
     @app.post("/remove/path")
-    def remove_path(req: PathRequest):
+    def remove_path(req: PathRequest, _: None = Depends(require_admin)):
         return st().indexer.remove_path(req.path)
 
     @app.post("/reindex")
-    def reindex(req: ReindexRequest):
+    def reindex(req: ReindexRequest, _: None = Depends(require_admin)):
         s = st()
         if req.path:
             try:
@@ -154,25 +169,25 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         raise HTTPException(400, "provide path, full=true, or wipe=true")
 
     @app.post("/indexer/pause")
-    def pause():
+    def pause(_: None = Depends(require_admin)):
         st().indexer.pause()
         return {"paused": True}
 
     @app.post("/indexer/resume")
-    def resume():
+    def resume(_: None = Depends(require_admin)):
         st().indexer.resume()
         return {"paused": False}
 
     @app.post("/indexer/retry-failed")
-    def retry_failed():
+    def retry_failed(_: None = Depends(require_admin)):
         return {"requeued": st().indexer.retry_failed()}
 
     @app.post("/indexer/incremental")
-    def incremental_now():
+    def incremental_now(_: None = Depends(require_admin)):
         return st().indexer.incremental()
 
     @app.post("/indexer/reconcile")
-    def reconcile_now():
+    def reconcile_now(_: None = Depends(require_admin)):
         return st().indexer.reconcile()
 
     @app.get("/document")

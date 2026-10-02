@@ -17,7 +17,7 @@ from semsearch.store.db import VectorCache
 # ---- security boundary ----
 
 def test_host_header_guard_blocks_dns_rebinding(built, cfg):
-    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1") as c:
+    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         assert c.get("/health").status_code == 200                                   # testclient uses host 'testserver'? no: base_url host
         r = c.get("/health", headers={"host": "evil.example:8765"})
         assert r.status_code == 421 and "not allowed" in r.json()["detail"]
@@ -278,7 +278,7 @@ def test_health_is_cheap_and_reads_count(built, cfg, monkeypatch):
         return orig()
 
     monkeypatch.setattr(built.store, "stats", counting)
-    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1") as c:
+    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         assert c.get("/health").json()["documents"] == 6
     assert calls["stats"] == 0
 

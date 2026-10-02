@@ -1,10 +1,16 @@
-"""Wires the subsystems together (used by the API server, the CLI's local mode, and tests)."""
+"""Wires the subsystems together (used by the service host, the API server, the CLI's local
+mode, and tests). Also owns the production concerns that sit between config and subsystems:
+accelerator resolution, store integrity/recovery, and the admin token."""
 from __future__ import annotations
 
+import json
 import logging
 import os
+import secrets
+import shutil
 import sys
 import time
+from typing import Any
 
 from .config import Config
 from .embed import create_provider
@@ -12,22 +18,107 @@ from .extract.registry import build_default_registry
 from .indexer import Indexer
 from .inventory.filesystem import FilesystemInventory
 from .retrieval import Retriever
-from .store.db import Store
+from .store.db import SCHEMA_VERSION, Store, StoreCorrupt, StoreIncompatible
 
 log = logging.getLogger(__name__)
 
 
+def resolve_devices(cfg: Config) -> tuple[Config, dict[str, Any]]:
+    """Resolve logical device roles to concrete runtime devices using stable adapter identity.
+    Returns (config with concrete device strings, resolution report)."""
+    emb = cfg.embedding
+    report: dict[str, Any] = {"adapters": [], "roles": {}, "at": time.time()}
+    if emb.provider != "onnx" or sys.platform != "win32":
+        return cfg, report
+    from .devices import enumerate_adapters, resolve_role
+    adapters = enumerate_adapters()
+    report["adapters"] = [a.to_dict() for a in adapters]
+    resolved: dict[str, str] = {}
+    for role in ("device", "bulk_device", "query_device"):
+        spec = getattr(emb, role)
+        effective = emb.device if spec == "same" else spec
+        try:
+            dev, why = resolve_role(effective, emb.devices, adapters, fallback=emb.fallback_device)
+        except ValueError as e:
+            raise
+        resolved[role] = dev
+        entry = {"configured": spec, "effective": effective, "resolved": dev, "why": why}
+        report["roles"][role] = entry
+        if "fell back" in why:
+            log.warning("accelerator fallback for %s: %s", role, why)
+        else:
+            log.info("device %s: %s", role, why)
+    new_emb = emb.model_copy(update=resolved)
+    return cfg.model_copy(update={"embedding": new_emb}), report
+
+
+def open_store_with_recovery(cfg: Config) -> tuple[Store, dict[str, Any]]:
+    """Open the index; on corruption quarantine the files and start fresh (logged loudly); on a
+    newer-than-supported schema refuse with a clear diagnostic (no automatic data loss)."""
+    path = cfg.db_path
+    os.makedirs(path.parent, exist_ok=True)
+    info: dict[str, Any] = {"path": str(path), "recovered_from_corruption": False}
+    try:
+        store = Store(path, vector_cache=cfg.retrieval.vector_cache,
+                      integrity_check=cfg.service.integrity_check, integrity_check_max_mb=cfg.service.integrity_check_max_mb)
+    except StoreIncompatible:
+        raise
+    except StoreCorrupt as e:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        log.error("index database is corrupt (%s); quarantining to *.corrupt-%s and rebuilding from scratch", e, stamp)
+        for suffix in ("", "-wal", "-shm"):
+            p = str(path) + suffix
+            if os.path.exists(p):
+                shutil.move(p, f"{p}.corrupt-{stamp}")
+        store = Store(path, vector_cache=cfg.retrieval.vector_cache, integrity_check="none")
+        store.set_meta("recovered_from_corruption_at", str(time.time()))
+        info["recovered_from_corruption"] = True
+    info["schema_version"] = int(store.get_meta("schema_version") or SCHEMA_VERSION)
+    return store, info
+
+
+def load_or_create_admin_token(cfg: Config) -> str:
+    """A random token in <state_dir>/admin.token gates mutating API calls. The file's ACL is set
+    by the installer (service account + Administrators + the operator); the CLI reads it."""
+    os.makedirs(cfg.state_path, exist_ok=True)
+    p = cfg.state_path / "admin.token"
+    try:
+        tok = p.read_text(encoding="utf-8").strip()
+        if len(tok) >= 32:
+            return tok
+    except FileNotFoundError:
+        pass
+    tok = secrets.token_hex(32)
+    tmp = p.with_suffix(".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(tok)
+    os.replace(tmp, p)
+    return tok
+
+
 class AppState:
     def __init__(self, cfg: Config, start_indexer: bool = True, isolate_extractors: bool = True):
+        self.raw_cfg = cfg
+        cfg, self.device_resolution = resolve_devices(cfg)
         self.cfg = cfg
         os.makedirs(cfg.data_dir, exist_ok=True)
+        os.makedirs(cfg.state_path, exist_ok=True)
+        try:
+            with open(cfg.state_path / "devices.json", "w", encoding="utf-8") as f:
+                json.dump(self.device_resolution, f, indent=1)
+        except OSError as e:
+            log.debug("could not persist device resolution: %s", e)
+        self.admin_token = load_or_create_admin_token(cfg)
+        os.environ.setdefault("HF_HOME", str(cfg.model_cache_dir))
         t0 = time.perf_counter()
         self.embedder = create_provider(cfg.embedding)
         log.info("embedding provider ready in %.1fs (%s)", time.perf_counter() - t0, self.embedder.fingerprint)
-        self.store = Store(cfg.db_path, vector_cache=cfg.retrieval.vector_cache)
+        self.store, self.store_info = open_store_with_recovery(cfg)
         action = self.store.ensure_vectors(self.embedder.fingerprint, self.embedder.dim, cfg.embedding.on_model_change)
         if action == "reset":
             log.warning("vectors were reset because the embedding model changed; re-embedding will run in the background")
+        log.info("store: %s schema v%s, %d documents, fingerprint %s", self.store.path, self.store_info["schema_version"],
+                 self.store.count_documents(), self.store.fingerprint)
         self.registry = build_default_registry(cfg)
         self.windows = None
         if cfg.indexing.use_windows_search and sys.platform == "win32":
@@ -49,11 +140,14 @@ class AppState:
         if start_indexer:
             self.indexer.start()
 
+    def close_without_indexer(self) -> None:
+        if hasattr(self.extractor, "close"):
+            self.extractor.close()
+        self.store.close()
+        self.embedder.close()
+
     def close(self) -> None:
         try:
             self.indexer.stop()
         finally:
-            if hasattr(self.extractor, "close"):
-                self.extractor.close()
-            self.store.close()
-            self.embedder.close()
+            self.close_without_indexer()

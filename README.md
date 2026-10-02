@@ -20,7 +20,26 @@ index, hybrid ranking with explainable scores, a loopback HTTP API and a CLI.
 - Incremental: unchanged bytes are never re-embedded; renames and moves re-point existing vectors.
 - Hybrid by default: every result carries its semantic score, lexical score, filename signal and ranks.
 
-## Quick start
+## Install as a Windows service (the supported way)
+
+```
+powershell -File installer\build_release.ps1                       # stage dist\SemSearch-<version>\ (self-contained runtime)
+cd dist\SemSearch-<version>                                        # then, from an ELEVATED PowerShell:
+.\install.ps1 -Roots "F:\HexyLab","C:\Users\you\Documents"         # install, start, verify
+```
+
+After that the service starts with Windows, keeps the index current in the background and
+answers on `http://127.0.0.1:8765`. From any prompt:
+
+```
+semsearch "notes about preventing autonomous agents from deleting files"
+semsearch status | health | stats | logs
+semsearch service status | start | stop | restart
+```
+
+Details, identity rationale, upgrade/uninstall and troubleshooting: [docs/windows-service.md](docs/windows-service.md).
+
+## Development quick start
 
 ```
 uv sync --extra dml                                 # or --extra cpu / --extra gpu (one ONNX runtime)
@@ -43,6 +62,7 @@ queries on the CPU (`query_device: cpu`). See docs/configuration.md "Devices".
 | [docs/api.md](docs/api.md) | HTTP endpoints and response shapes |
 | [docs/operations.md](docs/operations.md) | Initial index, incremental operation, rebuilding, monitoring, logs, troubleshooting |
 | [docs/evaluation.md](docs/evaluation.md) | Evaluation harness and measured results (literal vs semantic vs hybrid) |
+| [docs/windows-service.md](docs/windows-service.md) | Windows service: host, identity rationale with measurements, file layout, accelerator resolution, install/upgrade/uninstall, recovery |
 
 ## Layout
 
