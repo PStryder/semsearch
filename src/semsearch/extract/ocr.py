@@ -76,6 +76,8 @@ class WindowsOcrPdfExtractor:
             code = getattr(e, "winerror", None)
             if code in (-2147023573, 0x8007052B):  # ERROR_WRONG_PASSWORD from Windows.Data.Pdf
                 return ExtractResult("", "error", self.name, error="password-protected PDF (cannot be read without the password)")
+            if code in (-2147188672, 0x80041FC0):  # Windows.Data.Pdf: cannot parse the file at all
+                return ExtractResult("", "error", self.name, error="not a readable PDF: the Windows PDF engine cannot parse it (damaged, truncated, or not really a PDF)")
             return ExtractResult("", "error", self.name, error=f"OCR failed: {type(e).__name__}: {e}"[:400])
         except Exception as e:  # noqa: BLE001
             return ExtractResult("", "error", self.name, error=f"OCR failed: {type(e).__name__}: {e}"[:400])
