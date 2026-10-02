@@ -26,7 +26,7 @@ import numpy as np
 from ..models import Chunk
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # v2: documents.missing_since/title, jobs.dirty (additive; migrated in _migrate)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -234,25 +234,60 @@ class VectorCache:
             return [(int(self.ids[i]), float(sims[i])) for i in idx if not self.deleted[i]]
 
 
+class StoreCorrupt(Exception):
+    """The database file failed to open or its quick_check reported damage."""
+
+
+class StoreIncompatible(Exception):
+    """The database schema is newer than this build understands."""
+
+
 class Store:
-    def __init__(self, path: str | os.PathLike, vector_cache: bool = True):
+    def __init__(self, path: str | os.PathLike, vector_cache: bool = True, integrity_check: str = "quick", integrity_check_max_mb: int = 4096):
         self.path = str(path)
         os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
         self.lock = threading.RLock()
         self._tls = threading.local()
+        self._readers: list[sqlite3.Connection] = []
+        existed = os.path.exists(self.path)
         # one writer connection (serialized by self.lock) + one read-only connection per thread:
         # WAL readers see a consistent committed snapshot and never observe a half-written transaction
-        self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.execute("PRAGMA foreign_keys=ON")
-        self.conn.execute("PRAGMA temp_store=MEMORY")
-        self.conn.execute("PRAGMA cache_size=-65536")
-        self._load_vec()
-        self.conn.executescript(_SCHEMA)
-        self._migrate()
-        if self.get_meta("schema_version") is None:
+        try:
+            self.conn = sqlite3.connect(self.path, check_same_thread=False, isolation_level=None)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA journal_mode=WAL")      # crash-consistent: committed transactions survive power loss
+            self.conn.execute("PRAGMA synchronous=NORMAL")    # WAL + NORMAL: durable at checkpoint, no torn pages
+            self.conn.execute("PRAGMA foreign_keys=ON")
+            self.conn.execute("PRAGMA temp_store=MEMORY")
+            self.conn.execute("PRAGMA cache_size=-65536")
+            if existed and integrity_check == "quick":
+                size_mb = os.path.getsize(self.path) / (1024 * 1024)
+                if size_mb <= integrity_check_max_mb:
+                    t0 = time.perf_counter()
+                    res = self.conn.execute("PRAGMA quick_check").fetchall()
+                    verdict = res[0][0] if res else "no result"
+                    log.info("quick_check on %s (%.0f MB): %s in %.1fs", self.path, size_mb, verdict, time.perf_counter() - t0)
+                    if verdict != "ok":
+                        raise StoreCorrupt(f"quick_check: {verdict}")
+                else:
+                    log.info("skipping quick_check: database is %.0f MB (> %d MB)", size_mb, integrity_check_max_mb)
+            self._load_vec()
+            self.conn.executescript(_SCHEMA)
+            self._migrate()
+        except sqlite3.DatabaseError as e:
+            try:
+                self.conn.close()  # release the file so the caller can quarantine it
+            except Exception:  # noqa: BLE001
+                pass
+            raise StoreCorrupt(str(e)) from e
+        have = self.get_meta("schema_version")
+        if have is None:
+            self.set_meta("schema_version", str(SCHEMA_VERSION))
+        elif int(have) > SCHEMA_VERSION:
+            self.conn.close()
+            raise StoreIncompatible(f"index schema v{have} is newer than this build supports (v{SCHEMA_VERSION}); upgrade semsearch or restore a matching index")
+        elif int(have) < SCHEMA_VERSION:
+            log.info("migrating index schema v%s -> v%d", have, SCHEMA_VERSION)
             self.set_meta("schema_version", str(SCHEMA_VERSION))
         self.dim: int | None = int(self.get_meta("dim")) if self.get_meta("dim") else None
         self.fingerprint: str | None = self.get_meta("embedding_fingerprint")
@@ -285,6 +320,8 @@ class Store:
             c.execute("PRAGMA query_only=ON")
             self._load_vec_into(c)
             self._tls.rconn = c
+            with self.lock:
+                self._readers.append(c)
         return c
 
     def _migrate(self) -> None:
@@ -312,7 +349,20 @@ class Store:
         log.info("vector cache loaded: %d vectors in %.2fs", len(self.cache), time.perf_counter() - t0)
 
     def close(self) -> None:
+        """Close every connection (reader connections too) so the last close checkpoints and
+        removes the WAL; a lingering reader would keep stale WAL pages masking the main file."""
         with self.lock:
+            for c in self._readers:
+                try:
+                    c.close()
+                except Exception:  # noqa: BLE001
+                    pass
+            self._readers.clear()
+            self._tls = threading.local()
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:  # noqa: BLE001
+                pass
             self.conn.close()
 
     # ---- meta ----

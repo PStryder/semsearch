@@ -1,6 +1,6 @@
 [project]
 name = "semsearch"
-version = "0.1.0"
+version = "0.2.0"
 description = "Windows semantic-search sidecar: augments Windows Search with local embeddings and hybrid retrieval"
 readme = "README.md"
 requires-python = ">=3.11"

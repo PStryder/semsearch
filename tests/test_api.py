@@ -8,8 +8,24 @@ from semsearch.api import create_app
 @pytest.fixture
 def client(built, cfg):
     app = create_app(cfg, state=built)
-    with TestClient(app, base_url="http://127.0.0.1") as c:
+    with TestClient(app, base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         yield c
+
+
+def test_maintenance_endpoints_require_admin_token(built, cfg, root):
+    app = create_app(cfg, state=built)
+    with TestClient(app, base_url="http://127.0.0.1") as c:  # no token
+        assert c.post("/search", json={"query": "gpu"}).status_code == 200
+        assert c.get("/status").status_code == 200 and c.get("/stats").status_code == 200
+        for path, body in [("/index/path", {"path": str(root)}), ("/remove/path", {"path": str(root)}), ("/reindex", {"full": True}),
+                           ("/indexer/pause", None), ("/indexer/resume", None), ("/indexer/retry-failed", None),
+                           ("/indexer/incremental", None), ("/indexer/reconcile", None)]:
+            r = c.post(path, json=body) if body is not None else c.post(path)
+            assert r.status_code == 403, path
+        assert c.post("/indexer/pause", headers={"x-semsearch-token": "wrong" * 16}).status_code == 403
+        assert c.post("/indexer/pause", headers={"x-semsearch-token": built.admin_token}).status_code == 200
+        c.post("/indexer/resume", headers={"x-semsearch-token": built.admin_token})
+    assert len(built.admin_token) == 64 and (cfg.state_path / "admin.token").read_text() == built.admin_token
 
 
 def test_health(client):

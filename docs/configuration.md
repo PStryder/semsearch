@@ -6,6 +6,13 @@ semsearch reads one YAML file. Resolution order:
 2. `$SEMSEARCH_CONFIG`
 3. `./semsearch.yaml`
 4. `%LOCALAPPDATA%\semsearch\semsearch.yaml`
+5. `%ProgramData%\SemSearch\semsearch.yaml` (the service install; the service itself reads only this one)
+
+A malformed file (bad YAML, unknown device name, out-of-range port, non-loopback host without
+`allow_non_loopback`, wrong types) is rejected with a message naming the setting; the service
+refuses to start on it and logs the reason to the event log. `semsearch config --validate`
+checks a file without starting anything. `server:` is accepted as a synonym for `api:` and
+`embedding.steady_state_device` for `embedding.device`.
 
 `semsearch --init-config` prints a starter file. With no file at all the defaults apply and
 `roots` is empty, so nothing is indexed until you add at least one root.
@@ -13,7 +20,10 @@ semsearch reads one YAML file. Resolution order:
 ## Reference
 
 ```yaml
-data_dir: "%LOCALAPPDATA%/semsearch"   # DB, logs. Environment variables and ~ are expanded.
+data_dir: "%LOCALAPPDATA%/semsearch"   # Environment variables and ~ are expanded. Sub-dirs default under it:
+index_dir: null                         #   <data_dir>/index  (semsearch.db)
+state_dir: null                         #   <data_dir>/state  (admin.token, devices.json)
+log_dir: null                           #   <data_dir>/logs
 roots:                                  # directories to index (absolute paths)
   - "F:/HexyLab"
 excludes:                               # setting this REPLACES the default list
@@ -30,10 +40,15 @@ embedding:
   provider: onnx                        # onnx | sentence-transformers | hashing
   model: BAAI/bge-small-en-v1.5         # HF repo id with onnx/model.onnx, or a local directory
   revision: null                        # pin a HF revision
-  device: cpu                           # steady-state document embedding: cpu | cuda[:n] | dml[:n] | auto
+  device: cpu                           # steady-state document embedding: cpu | cuda[:n] | dml[:n] | auto | <name in devices>
   bulk_device: same                     # used during full builds / deep queues (see "Devices")
   query_device: same                    # query embedding (latency matters)
+  fallback_device: cpu                  # used when a named device is not present (logged, never fatal)
+  devices:                              # logical names -> stable selectors (vendor/device/subsys/address/name/integrated)
+    integrated-gpu: {integrated: true}
+    discrete-gpu: {integrated: false}
   bulk_threshold: 500                   # pending jobs above which bulk_device is used
+  cache_dir: null                       # model cache (default <data_dir>/models; HF_HOME)
   batch_size: 32
   max_seq_length: 512
   pooling: cls                          # cls (bge) | mean (MiniLM and most sentence-transformers)
@@ -72,6 +87,16 @@ indexing:
   fs_poll_interval_s: 600               # roots NOT in the Windows index are mtime-scanned at most this often
   skip_suspected_secrets: true          # refuse text containing private keys / API tokens (status secret_suspected)
   reconcile_min_fraction: 0.5           # skip tombstoning when an enumeration returns fewer than this share of known files
+  startup_reconcile_delay_s: 600        # first full reconcile this long after start
+  low_priority: true                    # below-normal process priority
+
+service:                                # Windows service host (docs/windows-service.md)
+  name: SemSearch
+  shutdown_timeout_s: 30
+  startup_timeout_s: 180
+  event_log: true
+  integrity_check: quick                # quick | none  (SQLite quick_check at open)
+  integrity_check_max_mb: 4096
 
 retrieval:
   default_mode: hybrid                  # literal | semantic | hybrid

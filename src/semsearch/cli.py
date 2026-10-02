@@ -1,32 +1,56 @@
 """Command-line interface.
 
-    semsearch "find the old design for the blackboard read tracking"
-    semsearch --literal "*.pdf"
-    semsearch --semantic "GPU memory architecture"
-    semsearch --status | --stats | --errors | --health
-    semsearch --reindex <path> | --reindex --full | --reindex --wipe
-    semsearch --remove <path>
-    semsearch --serve            (run the API server in the foreground)
-    semsearch --build            (one-shot: full build in-process, then exit)
-    semsearch --init-config      (write an example semsearch.yaml)
+Production (subcommand) form:
+    semsearch query "the document where I talked about receipts"   (or just: semsearch "...")
+    semsearch status | health | stats | errors | devices
+    semsearch reindex <path> | reindex --full
+    semsearch rebuild [--yes]
+    semsearch remove <path>
+    semsearch pause | resume | retry-failed
+    semsearch logs [-n 200] [--follow]
+    semsearch service status|start|stop|restart
+    semsearch config [--validate]
+    semsearch --init-config
 
-Query/status commands talk to the running API (default http://127.0.0.1:<port>). Add
-``--local`` to run against the index in-process without a server.
+Legacy flag form (kept for scripts and tests): semsearch --status, --literal "*.pdf", --reindex <path>,
+--serve, --build, --local, ...
+
+Query/status commands talk to the running API (default http://127.0.0.1:<port>). Maintenance
+commands send the admin token from <state_dir>/admin.token. Add ``--local`` to run against the
+index in-process without a server.
 """
 from __future__ import annotations
 
 import argparse
 import datetime as dt
 import json
+import os
 import sys
 import time
 
-from .config import example_yaml, load_config
+from . import __version__
+from .config import ConfigError, example_yaml, load_config, machine_config_path
+
+SUBCOMMANDS = {"query", "status", "health", "stats", "errors", "devices", "reindex", "rebuild", "remove", "pause", "resume",
+               "retry-failed", "logs", "service", "config", "version"}
 
 
-def _client(base: str):
+def _client(base: str, token: str | None = None):
     import httpx
-    return httpx.Client(base_url=base, timeout=120.0)
+    headers = {"x-semsearch-token": token} if token else {}
+    return httpx.Client(base_url=base, timeout=120.0, headers=headers)
+
+
+def _admin_token(cfg) -> str | None:
+    p = cfg.state_path / "admin.token"
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except PermissionError:
+        print(f"cannot read the admin token at {p}: this account is not allowed to control the index "
+              f"(run as the operator account that installed the service, or elevated)", file=sys.stderr)
+        return None
+    except FileNotFoundError:
+        return None
 
 
 def _print_results(res: dict, verbose: bool) -> None:
@@ -65,6 +89,7 @@ def _fmt_ts(ts):
 
 def _print_status(s: dict) -> None:
     ix = s["indexer"]
+    print(f"semsearch {s.get('version', '?')}  pid {s.get('pid', '?')}")
     print("Indexer:", "running" if ix["running"] else "stopped", "(paused)" if ix["paused"] else "", "full build in progress" if ix["full_build_in_progress"] else "")
     print("  roots:", ", ".join(ix["roots"]))
     print("  sources:", ix["sources"])
@@ -73,6 +98,8 @@ def _print_status(s: dict) -> None:
     print("  counters:", ix["counters"])
     print("  throughput:", ix["throughput"], " watcher:", ix["watcher"], " extractor restarts:", ix["extractor_restarts"])
     print("  embedding:", ix["embedding"])
+    for role, r in (s.get("devices") or {}).get("roles", {}).items():
+        print(f"    {role:<13} {r['configured']:<18} -> {r['resolved']:<8} {r['why']}")
     if ix.get("last_error"):
         print("  last error:", ix["last_error"])
     ws = s.get("windows_search", {})
@@ -80,9 +107,215 @@ def _print_status(s: dict) -> None:
         print("Windows Search:", ws["status"], "items:", ws["items"], "to index:", ws["to_index"], "indexing:", ws.get("url_being_indexed") or "-")
     else:
         print("Windows Search: unavailable", ws.get("error", ""))
-    print("Store:", s["store"])
+    st = s["store"]
+    print(f"Store: {st['path']}  schema v{st.get('schema_version')}  dim {st.get('dim')}" + ("  RECOVERED FROM CORRUPTION" if st.get("recovered_from_corruption") else ""))
+    print("Config:", s.get("config_source"))
 
 
+# ---------------------------------------------------------------- service control (pywin32)
+def service_control(action: str, name: str = "SemSearch") -> int:
+    try:
+        import pywintypes
+        import win32service
+        import win32serviceutil
+    except ImportError:
+        print("service control needs pywin32 (Windows only)", file=sys.stderr)
+        return 2
+    states = {1: "stopped", 2: "start pending", 3: "stop pending", 4: "running", 5: "continue pending", 6: "pause pending", 7: "paused"}
+    try:
+        if action == "status":
+            st = win32serviceutil.QueryServiceStatus(name)
+            print(f"{name}: {states.get(st[1], st[1])}")
+            try:
+                cfg = win32serviceutil.QueryServiceConfig(name) if hasattr(win32serviceutil, "QueryServiceConfig") else None
+            except Exception:  # noqa: BLE001
+                cfg = None
+            if cfg:
+                print("  binary:", cfg[3], " account:", cfg[7])
+            return 0 if st[1] == 4 else 1
+        if action == "start":
+            win32serviceutil.StartService(name)
+            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_RUNNING, 180)
+            print(f"{name}: running")
+            return 0
+        if action == "stop":
+            win32serviceutil.StopService(name)
+            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_STOPPED, 60)
+            print(f"{name}: stopped")
+            return 0
+        if action == "restart":
+            win32serviceutil.RestartService(name, waitSeconds=60)
+            win32serviceutil.WaitForServiceStatus(name, win32service.SERVICE_RUNNING, 180)
+            print(f"{name}: running")
+            return 0
+    except pywintypes.error as e:
+        if e.winerror == 5:
+            print(f"access denied controlling {name}: run from an elevated prompt, or re-run the installer which grants "
+                  f"start/stop rights to the operator account", file=sys.stderr)
+        elif e.winerror == 1060:
+            print(f"service {name} is not installed (see docs/windows-service.md)", file=sys.stderr)
+        else:
+            print(f"{name}: {e}", file=sys.stderr)
+        return 1
+    print(f"unknown service action {action}", file=sys.stderr)
+    return 2
+
+
+# ---------------------------------------------------------------- subcommand dispatcher
+def dispatch(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(prog="semsearch", description="Semantic search over local files (Windows Search sidecar)")
+    ap.add_argument("--config", help="path to semsearch.yaml")
+    ap.add_argument("--url", help="API base URL (default from config)")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--version", action="version", version=f"semsearch {__version__}")
+    sub = ap.add_subparsers(dest="cmd")
+    q = sub.add_parser("query", help="search")
+    q.add_argument("text", nargs="+")
+    m = q.add_mutually_exclusive_group()
+    m.add_argument("--literal", action="store_true")
+    m.add_argument("--semantic", action="store_true")
+    m.add_argument("--hybrid", action="store_true")
+    q.add_argument("-n", "--limit", type=int, default=10)
+    q.add_argument("--ext")
+    q.add_argument("--root")
+    q.add_argument("-v", "--verbose", action="store_true")
+    for name in ("status", "health", "stats", "errors", "devices", "pause", "resume", "retry-failed", "version"):
+        sub.add_parser(name)
+    r = sub.add_parser("reindex", help="re-index a path, or --full")
+    r.add_argument("path", nargs="?")
+    r.add_argument("--full", action="store_true")
+    rb = sub.add_parser("rebuild", help="drop the index and rebuild from scratch")
+    rb.add_argument("--yes", action="store_true")
+    rm = sub.add_parser("remove")
+    rm.add_argument("path")
+    lg = sub.add_parser("logs")
+    lg.add_argument("-n", type=int, default=200)
+    lg.add_argument("--follow", "-f", action="store_true")
+    sv = sub.add_parser("service", help="Windows service control")
+    sv.add_argument("action", choices=["status", "start", "stop", "restart"])
+    cf = sub.add_parser("config")
+    cf.add_argument("--validate", action="store_true")
+    a = ap.parse_args(argv)
+
+    try:
+        cfg = load_config(a.config)
+    except ConfigError as e:
+        print(f"configuration error: {e}", file=sys.stderr)
+        return 2
+    base = a.url or f"http://{cfg.api.host}:{cfg.api.port}"
+
+    if a.cmd == "version":
+        print(f"semsearch {__version__}")
+        return 0
+    if a.cmd == "config":
+        print("config file:", cfg.source_path or "(defaults; no file found)")
+        print("machine config path:", machine_config_path())
+        print("index:", cfg.db_path, "\nstate:", cfg.state_path, "\nlogs:", cfg.log_dir, "\nmodels:", cfg.model_cache_dir)
+        problems = cfg.validate_for_startup()
+        if a.validate or problems:
+            for p in problems:
+                print("  PROBLEM:", p)
+            print("valid" if not problems else f"{len(problems)} problem(s)")
+        return 0 if not problems else 1
+    if a.cmd == "service":
+        return service_control(a.action, cfg.service.name)
+    if a.cmd == "logs":
+        p = cfg.log_dir / "semsearch.log"
+        if not p.exists():
+            print(f"no log file at {p}", file=sys.stderr)
+            return 1
+        with open(p, "r", encoding="utf-8", errors="replace") as f:
+            lines = f.readlines()
+            sys.stdout.write("".join(lines[-a.n:]))
+            if a.follow:
+                try:
+                    while True:
+                        chunk = f.read()
+                        if chunk:
+                            sys.stdout.write(chunk)
+                            sys.stdout.flush()
+                        time.sleep(0.5)
+                except KeyboardInterrupt:
+                    pass
+        return 0
+    if a.cmd == "devices":
+        from .devices import enumerate_adapters, selector_for
+        for ad in enumerate_adapters():
+            print(f"dml:{ad.ordinal}  {ad.name:<36} {ad.stable_id:<40} vram {ad.dedicated_vram_mb} MB  {'software' if ad.software else ('integrated' if ad.integrated else 'discrete')}")
+            if not ad.software:
+                print(f"       selector: {json.dumps(selector_for(ad))}")
+        return 0
+
+    token = _admin_token(cfg) if a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") else None
+    try:
+        with _client(base, token) as c:
+            if a.cmd == "health":
+                r = c.get("/health")
+                print(json.dumps(r.json(), indent=2))
+                return 0 if r.status_code == 200 and r.json().get("ok") else 1
+            if a.cmd == "status":
+                r = c.get("/status")
+                r.raise_for_status()
+                print(json.dumps(r.json(), indent=2)) if a.json else _print_status(r.json())
+                return 0
+            if a.cmd == "stats":
+                print(json.dumps(c.get("/stats").json(), indent=2))
+                return 0
+            if a.cmd == "errors":
+                for e in c.get("/errors").json()["errors"]:
+                    print(_fmt_ts(e["at"]), e["stage"], e["path"], "-", (e["message"] or "")[:200])
+                return 0
+            if a.cmd == "query":
+                mode = "literal" if a.literal else "semantic" if a.semantic else "hybrid" if a.hybrid else None
+                body = {"query": " ".join(a.text), "mode": mode, "limit": a.limit}
+                if a.root:
+                    body["roots"] = [a.root]
+                if a.ext:
+                    body["extensions"] = a.ext.split(",")
+                r = c.post("/search", json=body)
+                if r.status_code != 200:
+                    print("error:", r.text, file=sys.stderr)
+                    return 1
+                print(json.dumps(r.json(), indent=2)) if a.json else _print_results(r.json(), a.verbose)
+                return 0
+            # maintenance
+            if token is None:
+                print("admin token unavailable; maintenance commands need it", file=sys.stderr)
+                return 3
+            if a.cmd == "reindex":
+                if not a.path and not a.full:
+                    print("reindex: give a path or --full", file=sys.stderr)
+                    return 2
+                r = c.post("/reindex", json={"path": a.path, "full": a.full})
+            elif a.cmd == "rebuild":
+                if not a.yes:
+                    print("rebuild drops the whole index and re-embeds everything; re-run with --yes", file=sys.stderr)
+                    return 2
+                r = c.post("/reindex", json={"wipe": True})
+            elif a.cmd == "remove":
+                r = c.post("/remove/path", json={"path": a.path})
+            elif a.cmd == "pause":
+                r = c.post("/indexer/pause")
+            elif a.cmd == "resume":
+                r = c.post("/indexer/resume")
+            elif a.cmd == "retry-failed":
+                r = c.post("/indexer/retry-failed")
+            else:
+                ap.print_help()
+                return 1
+            if r.status_code == 403:
+                print("rejected: admin token not accepted (" + r.text + ")", file=sys.stderr)
+                return 3
+            print(json.dumps(r.json()))
+            return 0 if r.status_code < 400 else 1
+    except Exception as e:  # noqa: BLE001
+        if "Connect" in type(e).__name__ or "connect" in str(e).lower():
+            print(f"cannot reach semsearch API at {base}. Is the service running? (semsearch service status)", file=sys.stderr)
+            return 3
+        raise
+
+
+# ---------------------------------------------------------------- legacy flag interface
 def main(argv: list[str] | None = None) -> int:
     # Windows consoles often default to cp1252; excerpts contain arbitrary Unicode
     for stream in (sys.stdout, sys.stderr):
@@ -90,6 +323,9 @@ def main(argv: list[str] | None = None) -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
         except Exception:
             pass
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if argv and argv[0] in SUBCOMMANDS:
+        return dispatch(argv)
     ap = argparse.ArgumentParser(prog="semsearch", description="Semantic search over local files (Windows Search sidecar)")
     ap.add_argument("query", nargs="?", help="search text; wildcards like *.pdf run a filename search")
     mode = ap.add_mutually_exclusive_group()
@@ -120,12 +356,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--local", action="store_true", help="run against the index in-process instead of the API")
     ap.add_argument("--host")
     ap.add_argument("--port", type=int)
+    ap.add_argument("--version", action="version", version=f"semsearch {__version__}")
     a = ap.parse_args(argv)
 
     if a.init_config:
         print(example_yaml())
         return 0
-    cfg = load_config(a.config)
+    try:
+        cfg = load_config(a.config)
+    except ConfigError as e:
+        print(f"configuration error: {e}", file=sys.stderr)
+        return 2
     base = a.url or f"http://{cfg.api.host}:{cfg.api.port}"
     m = "literal" if a.literal else "semantic" if a.semantic else "hybrid" if a.hybrid else None
 
@@ -150,7 +391,6 @@ def main(argv: list[str] | None = None) -> int:
             if a.build:
                 r = st.indexer.full_build()
                 print("enqueued:", r)
-                # drain the queue in the foreground
                 t0 = time.time()
                 n = 0
                 while True:
@@ -170,8 +410,10 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if a.status:
                 from .inventory.catalog import catalog_status
-                _print_status({"indexer": st.indexer.status(), "windows_search": catalog_status() if st.windows else {"available": False},
-                               "store": {"path": str(cfg.db_path), "fingerprint": st.store.fingerprint, "dim": st.store.dim}})
+                _print_status({"version": __version__, "indexer": st.indexer.status(), "windows_search": catalog_status() if st.windows else {"available": False},
+                               "store": {"path": str(cfg.db_path), "fingerprint": st.store.fingerprint, "dim": st.store.dim,
+                                         "schema_version": st.store_info.get("schema_version")}, "devices": st.device_resolution,
+                               "config_source": str(cfg.source_path) if cfg.source_path else None, "pid": os.getpid()})
                 return 0
             if a.stats:
                 print(json.dumps(st.store.stats(), indent=2))
@@ -190,12 +432,15 @@ def main(argv: list[str] | None = None) -> int:
             st.close()
 
     # ---- HTTP client mode ----
+    needs_token = a.reindex is not None or a.remove or a.pause or a.resume or a.retry_failed
+    token = _admin_token(cfg) if needs_token else None
     try:
-        with _client(base) as c:
+        with _client(base, token) as c:
             if a.health:
                 print(json.dumps(c.get("/health").json(), indent=2))
             elif a.status:
-                r = c.get("/status"); r.raise_for_status()
+                r = c.get("/status")
+                r.raise_for_status()
                 print(json.dumps(r.json(), indent=2)) if a.json else _print_status(r.json())
             elif a.stats:
                 print(json.dumps(c.get("/stats").json(), indent=2))
@@ -234,7 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
     except Exception as e:  # noqa: BLE001
         if "Connect" in type(e).__name__ or "connect" in str(e).lower():
-            print(f"cannot reach semsearch API at {base}. Start it with: semsearch --serve  (or add --local)", file=sys.stderr)
+            print(f"cannot reach semsearch API at {base}. Is the service running? (semsearch service status; or add --local)", file=sys.stderr)
             return 3
         raise
     return 0

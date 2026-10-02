@@ -477,7 +477,9 @@ class Indexer:
 
     def _schedule_loop(self) -> None:
         last_inc = 0.0
-        last_rec = time.time()
+        # the incremental (GatherTime delta) pass runs on the first loop; the first full
+        # reconcile is deferred so a boot does not start with a complete enumeration
+        last_rec = time.time() - self.cfg.indexing.reconcile_interval_s + self.cfg.indexing.startup_reconcile_delay_s
         while not self._stop.is_set():
             try:
                 if self._full_requested:
