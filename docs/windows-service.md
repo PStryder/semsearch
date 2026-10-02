@@ -12,13 +12,26 @@ semsearch runs as a native SCM service hosted in its own packaged CPython runtim
 no console window, no NSSM/WinSW shim and no dependency on any Python installed on the
 machine. The service class (`src/semsearch/service.py`) implements the SCM contract directly:
 
-Two Session-0 facts shaped the host, both found by running it as a service rather than
-assuming: a venv's `python.exe` on Windows is a launcher that spawns the real interpreter as a
-child, which the Service Control Manager logs as "a service process other than the one
-launched connected" and which breaks process accounting on stop, so the runtime has no venv
-layer and the binary is the real `pythonw.exe`; and a windowless process has
-`sys.stdout = None`, which uvicorn's default logging configuration trips over, so the host
-installs null standard streams and keeps its own logging configuration.
+Four Session-0 facts shaped the host and the installer. None of them is visible when the
+same code runs from a terminal; each was found by running the real service and reading the
+event log:
+
+1. A venv's `python.exe` on Windows is a launcher that spawns the real interpreter as a
+   child. The Service Control Manager logs "a service process other than the one launched
+   connected", and stop/kill accounting applies to the wrong process. The runtime therefore
+   has no venv layer; the binary is the real `pythonw.exe`.
+2. A windowless process has `sys.stdout = None`; uvicorn's default logging configuration
+   calls `.isatty()` on it and the API never starts. The host installs null standard streams
+   (not `NUL`, whose `isatty()` is true on Windows) and keeps its own logging configuration.
+3. The interpreter honours the *installing user's* `%APPDATA%\Python` site-packages. `pip`
+   reported packages found there as "already satisfied" and left them out of the runtime,
+   the verification step passed because it ran as that user, and the service, which has no
+   user profile, failed with `No module named 'tokenizers'`. Everything now runs with
+   `python -s` (build, verification, the service binary, the CLI wrapper).
+4. Failure-recovery actions fire during an upgrade: while the installer was copying the new
+   runtime, the SCM restarted the previous instance against a half-copied tree. The installer
+   disables recovery and sets the service to disabled for the duration of the upgrade, then
+   restores both.
 
 | Behaviour | Implementation |
 |---|---|
@@ -193,6 +206,11 @@ Install (elevated PowerShell, inside the release directory):
 .\install.ps1 -Roots "F:\HexyLab","C:\Users\you\Documents"
 ```
 
+The slow step is the read grant on each root: Windows propagates the inheritable entry to
+every object in the tree, which took several minutes on `F:\HexyLab` (hundreds of thousands
+of files once virtual environments and `node_modules` are counted). The installer grants the
+entry on the root only (no `/T`), so the propagation is the kernel's, not a per-file rewrite.
+
 The installer: checks elevation, Windows build and the WSearch service; copies the runtime to
 `%ProgramFiles%\SemSearch` (keeping the previous one as `SemSearch.previous` until success);
 creates the data directories; writes `semsearch.yaml` if absent, with device selectors for
@@ -211,6 +229,36 @@ Session 0 with no console, identity, loopback-only binding and LAN unreachabilit
 header rejection, device resolution, Windows Search reachability from the service, watcher,
 admin-token enforcement, create/modify/rename/delete propagation inside a root with
 timings, and a service restart with identical device resolution and no re-embedding.
+
+Measured on this workstation on 2026-10-02 against the live install (run as the operator
+account, unelevated; root `F:\HexyLab`, initial build in progress at the time):
+
+| check | result |
+|---|---|
+| service installed, running, `pythonw.exe`, Session 0, account `NT SERVICE\SemSearch` | pass |
+| `/health` ok | pass (version 0.2.0) |
+| API not reachable on the LAN address; listening on 127.0.0.1 only | pass |
+| Host header `evil.example` rejected | pass (421) |
+| device roles inside the service | `integrated-gpu -> dml:0` (Radeon), `discrete-gpu -> dml:1` (RTX 4080), `cpu`; note the ordinals are the reverse of the desktop session |
+| Windows Search reachable from the service | pass (catalog `processing_notifications`, 282,402 items) |
+| watcher active, schema v2, no corruption recovery | pass |
+| operator can read the admin token; maintenance call without token | pass / 403 |
+| create → searchable | 2 s |
+| modify → searchable | < 2 s |
+| rename → path updated | < 2 s |
+| delete → gone from results | < 2 s |
+| `semsearch service restart` as the operator (no elevation) | pass; healthy again in < 2 s with the index intact and identical device resolution |
+| event log lifecycle entries, rotating log file | pass |
+
+Bulk indexing in service context ran on the RTX 4080 (`bulk_mode: true`, `dml:1` in the
+service's numbering) at 80 to 103 chunks/s, 11 to 13 documents/s, with the process at
+below-normal priority. The upgrade path (re-running `install.ps1` over the live install)
+kept the index and configuration, skipped the already-present ACL grant, and brought the
+service back healthy; the suite of 133 unit and integration tests passes.
+
+Not demonstrated in this session: a full Windows reboot. The service is registered
+`AUTO_START` with delayed start and failure recovery, and a cold start was exercised through
+`sc start` by the installer, but the reboot itself was left to the operator.
 
 ## Day-to-day commands
 

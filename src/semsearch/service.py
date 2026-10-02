@@ -178,10 +178,16 @@ def host_interpreter() -> str:
 def _single_instance_or_exit() -> object | None:
     """Return the held mutex handle, or None if another instance already holds it."""
     try:
+        import pywintypes
         import win32api
         import win32event
         import winerror
-        h = win32event.CreateMutex(None, False, MUTEX_NAME)
+        try:
+            h = win32event.CreateMutex(None, False, MUTEX_NAME)
+        except pywintypes.error as e:
+            if e.winerror == winerror.ERROR_ACCESS_DENIED:
+                return None  # exists and is owned by another account (the real service): same answer
+            raise
         if win32api.GetLastError() == winerror.ERROR_ALREADY_EXISTS:
             return None
         return h

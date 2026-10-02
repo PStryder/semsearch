@@ -8,9 +8,11 @@ function Check($name, $ok, $detail) { if ($ok) { Write-Host ("PASS  {0,-44} {1}"
 $semsearch = "$env:ProgramFiles\SemSearch\semsearch.cmd"
 $svc = Get-Service SemSearch -ErrorAction SilentlyContinue
 Check "service installed and running" ($svc -and $svc.Status -eq 'Running') "$($svc.Status)"
-$proc = Get-CimInstance Win32_Process -Filter "Name like 'python%'" | Where-Object { $_.CommandLine -like '*semsearch.service*' } | Select-Object -First 1
-Check "service process exists (no console)" ($null -ne $proc) "pid $($proc.ProcessId) session $($proc.SessionId) cmd: $($proc.CommandLine)"
-if ($proc) { Check "runs in Session 0" ($proc.SessionId -eq 0) "session $($proc.SessionId)"; $owner = Invoke-CimMethod -InputObject $proc -MethodName GetOwner; Check "service identity" $true "$($owner.Domain)\$($owner.User)" }
+# an unelevated session cannot read another account's process command line; take the PID from the SCM instead
+$wsvc = Get-CimInstance Win32_Service -Filter "Name='SemSearch'"
+$proc = if ($wsvc -and $wsvc.ProcessId) { Get-CimInstance Win32_Process -Filter "ProcessId=$($wsvc.ProcessId)" } else { $null }
+Check "service process exists (no console)" ($null -ne $proc -and $proc.Name -eq 'pythonw.exe') "pid $($wsvc.ProcessId) $($proc.Name) session $($proc.SessionId) account $($wsvc.StartName) binary: $($wsvc.PathName)"
+if ($proc) { Check "runs in Session 0" ($proc.SessionId -eq 0) "session $($proc.SessionId)"; Check "service identity is the virtual account" ($wsvc.StartName -eq 'NT SERVICE\SemSearch') "$($wsvc.StartName)" }
 $h = $null; try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 10 } catch {}
 Check "/health ok" ($h -and $h.ok) "version $($h.version), $($h.documents) docs"
 $lan = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254*' } | Select-Object -First 1).IPAddress
