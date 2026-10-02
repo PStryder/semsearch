@@ -81,6 +81,18 @@ class IsolatedExtractor:
             pass
         self._proc, self._conn = None, None
 
+    def kill_now(self) -> None:
+        """Terminate the child WITHOUT taking the lock: called from another thread while
+        extract() may be blocked waiting on the child. The waiting extract() sees the broken
+        pipe, returns an error result, and the next call starts a fresh child."""
+        p = self._proc
+        try:
+            if p is not None and p.is_alive():
+                p.terminate()
+                self.restarts += 1
+        except Exception:
+            pass
+
     def close(self) -> None:
         with self._lock:
             try:

@@ -84,16 +84,22 @@ class Retriever:
         query = (query or "").strip()
         if not query:
             return {"query": query, "mode": mode, "results": [], "took_ms": 0.0, "candidates": 0}
+        if not self.roots:
+            # no configured roots means nothing is authorized to be shown, whatever the store holds
+            return {"query": query, "mode": mode, "results": [], "took_ms": 0.0, "candidates": 0, "note": "no roots configured"}
         cands: dict[int, _Cand] = {}
         timings: dict[str, float] = {}
         glob_mode = self._is_glob(query)
+        # a filter is applied after candidate collection, so collect a deeper pool when filtering
+        # (otherwise a narrow root/extension could be starved by the global top-k)
+        pool = 8 if (roots or extensions) else 1
         if mode in ("literal", "hybrid"):
             t = time.perf_counter()
-            self._lexical(query, cands, glob_mode)
+            self._lexical(query, cands, glob_mode, pool)
             timings["lexical_ms"] = round((time.perf_counter() - t) * 1000, 1)
         if mode in ("semantic", "hybrid") and not glob_mode:
             t = time.perf_counter()
-            self._semantic(query, cands)
+            self._semantic(query, cands, pool)
             timings["semantic_ms"] = round((time.perf_counter() - t) * 1000, 1)
 
         docs = self.store.get_documents(cands.keys())
@@ -139,10 +145,12 @@ class Retriever:
         quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
         return (" AND " if conjunctive else " OR ").join(quoted)
 
-    def _lexical(self, query: str, cands: dict[int, _Cand], glob_mode: bool) -> None:
+    def _lexical(self, query: str, cands: dict[int, _Cand], glob_mode: bool, pool: int = 1) -> None:
         rc = self.cfg.retrieval
+        k_chunks = min(rc.candidate_chunks * pool, 5000)
+        k_docs = min(rc.candidate_docs * pool, 2000)
         if glob_mode:
-            for doc_id, fn in self.store.filename_glob(query, limit=rc.candidate_docs * 2):
+            for doc_id, fn in self.store.filename_glob(query, limit=k_docs * 2):
                 c = cands.setdefault(doc_id, _Cand(doc_id))
                 c.filename = 1.0
                 c.lexical = 1.0
@@ -154,9 +162,9 @@ class Retriever:
             return
         rows: list[tuple[int, int, float]] = []
         if len(terms) > 1:
-            rows = self.store.fts(self.fts_expr(terms, True), rc.candidate_chunks)
+            rows = self.store.fts(self.fts_expr(terms, True), k_chunks)
         if not rows:
-            rows = self.store.fts(self.fts_expr(terms, False), rc.candidate_chunks)
+            rows = self.store.fts(self.fts_expr(terms, False), k_chunks)
         best: dict[int, tuple[int, float]] = {}
         for chunk_id, doc_id, s in rows:
             if doc_id not in best or s > best[doc_id][1]:
@@ -170,7 +178,7 @@ class Retriever:
         # filename substring match (all terms present in the filename)
         fn_hits: dict[int, int] = {}
         for t in terms[:6]:
-            for doc_id, fn in self.store.filename_like(t, limit=500):
+            for doc_id, fn in self.store.filename_like(t, limit=500 * pool):
                 fn_hits[doc_id] = fn_hits.get(doc_id, 0) + 1
         for doc_id, n in fn_hits.items():
             frac = n / max(1, min(len(terms), 6))
@@ -182,7 +190,7 @@ class Retriever:
         # Windows Search relevance (when the file has content in SystemIndex)
         if rc.use_windows_rank and self.windows is not None:
             try:
-                for path, rank in self.windows.freetext(query, [os.fspath(r) for r in self.cfg.roots], limit=rc.candidate_docs):
+                for path, rank in self.windows.freetext(query, [os.fspath(r) for r in self.cfg.roots], limit=k_docs):
                     row = self.store.get_document(normalize_path(path))
                     if row is None:
                         continue
@@ -196,10 +204,10 @@ class Retriever:
         self._assign_ranks(cands, "lexical")
 
     # ---------- semantic ----------
-    def _semantic(self, query: str, cands: dict[int, _Cand]) -> None:
+    def _semantic(self, query: str, cands: dict[int, _Cand], pool: int = 1) -> None:
         rc = self.cfg.retrieval
         q = self.embedder.embed([query], "query")[0]
-        hits = self.store.knn(q, rc.candidate_chunks)
+        hits = self.store.knn(q, min(rc.candidate_chunks * pool, 5000))
         if not hits:
             return
         chunk_rows = self.store.get_chunks([cid for cid, _ in hits])

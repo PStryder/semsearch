@@ -91,7 +91,7 @@ Explicit removal through the API or CLI deletes immediately.
 | Watcher (`ReadDirectoryChangesW`) | ~1.5 s settle | add, modify, delete, rename | Buffer overflow falls back to the next incremental/reconcile |
 | Windows Search `GatherTime >= checkpoint` | 1 to 2 s indexer lag + poll interval | add, modify, rename-as-new-path | Only for roots Windows indexes; checkpoint stored per root |
 | Filesystem mtime scan | poll interval | add, modify | For roots Windows does not index |
-| Reconcile (full enumeration diff) | `reconcile_interval_s` | delete, add, modify (anything the others missed) | Enumeration is Windows Search plus a filesystem walk, unioned; files the store lacks or holds with a stale size/mtime are enqueued; tombstoning is skipped when the enumeration returns fewer than `reconcile_min_fraction` of the known files |
+| Reconcile (full enumeration diff) | `reconcile_interval_s` | delete, add, modify (anything the others missed) | Enumeration is Windows Search plus a filesystem walk, unioned; each enumerated file is compared against a fresh `os.stat` (never the inventory's possibly stale metadata) and enqueued when the store lacks it or holds a different size/mtime; tombstoning is skipped when the enumeration returns fewer than `reconcile_min_fraction` of the known files |
 
 A job that is re-enqueued while that same path is being processed is flagged dirty; when the
 running job completes it goes back to pending instead of being deleted, so a save that lands
@@ -115,7 +115,11 @@ One SQLite file (`<data_dir>/semsearch.db`, WAL mode):
 - `meta` — schema version, embedding fingerprint and dimension, per-root checkpoints, last full build
 
 An in-memory float32 matrix mirrors `vec_chunks` (`retrieval.vector_cache: true`) so a query is
-one matrix-vector product; sqlite-vec remains the persistent store and the fallback.
+one matrix-vector product; sqlite-vec remains the persistent store and the fallback. Every
+mutation runs in one SQLite transaction, and both the matrix and the store's version counter
+(which keys the response cache) are updated only after COMMIT: a rollback leaves the cache
+exactly as SQLite is, and a search that read the pre-commit snapshot is cached under the old
+version and dies with the commit.
 At 384 dimensions the cache costs about 1.5 KB per chunk (≈ 750 MB per 500k chunks).
 
 ## Embedding devices
@@ -146,6 +150,9 @@ On startup `Store.ensure_vectors` compares it with the configured provider:
   A query containing `*` or `?` and no spaces is a filename glob.
 - **semantic**: query embedding (with the model's query prefix) → top-k chunks from the vector
   cache → best chunk per document, cosine similarity as the score.
+- When a root or extension filter is given, the candidate pools are collected eight times
+  deeper (capped), because filtering happens after collection and a narrow filter could
+  otherwise be starved by the global top-k.
 - **hybrid** (default): both lists; final score is a convex combination of min-max normalized
   component scores (`semantic_weight`, `lexical_weight`), with a small filename bonus.
   Reciprocal rank fusion is available (`retrieval.fusion: rrf`) and the RRF value is reported
@@ -171,8 +178,12 @@ invalidates it; cached responses carry `"cached": true`.
   recorded as `secret_suspected` (visible in `/stats` and `/errors`) and the text is dropped
 - Exclusion and extension policy is enforced when a job runs, not only when it is enqueued, so
   an explicit `/index/path` cannot pull in an excluded file; at startup `enforce_scope` removes
-  documents that a removed root or a new exclusion no longer covers, and retrieval filters to
-  the configured roots regardless
+  documents that a removed root or a new exclusion no longer covers, and both retrieval and
+  `/document` refuse anything outside the configured roots regardless of what the store holds.
+  An empty roots list makes nothing searchable but never deletes the index (a configuration
+  mistake must not destroy data)
+- Turning secret screening on later rescans the stored text of already-indexed, unchanged
+  documents at the next start and quarantines hits; turning it off re-queues them
 - No endpoint writes to, moves or deletes source files; index mutations touch only the sidecar DB
 - Every indexed path must lie inside a configured root after normalization; `..`, long-path
   prefixes and `file:` URLs are normalized before the check

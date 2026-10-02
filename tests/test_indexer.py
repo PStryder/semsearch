@@ -60,8 +60,10 @@ def test_modified_file_re_embeds_only_new_chunks(built, root):
 
 
 def test_rename_is_detected_as_move_without_re_embedding(built, root):
+    # a move that keeps the file name keeps the title header, so nothing needs re-embedding
+    # (a rename that changes the name queues a re-embed: see test_review_fixes_3)
     src = root / "gpu.txt"
-    dst = root / "sub" / "gpu_renamed.txt"
+    dst = root / "sub" / "gpu.txt"
     before = counters(built)
     os.rename(src, dst)
     built.indexer.reconcile()  # tombstones the old path; the move below must still reclaim its vectors
@@ -74,7 +76,7 @@ def test_rename_is_detected_as_move_without_re_embedding(built, root):
     assert built.store.get_document(normalize_path(str(src))) is None  # row was re-pointed, not duplicated
     d = built.store.get_document(normalize_path(str(dst)))
     assert d is not None and d["n_chunks"] > 0
-    assert built.retriever.search("GPU memory architecture", "semantic", 1)["results"][0]["filename"] == "gpu_renamed.txt"
+    assert built.retriever.search("GPU memory architecture", "semantic", 1)["results"][0]["path"].lower() == str(dst).lower()
 
 
 def test_deleted_files_are_tombstoned_then_purged(built, root):

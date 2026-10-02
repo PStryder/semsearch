@@ -144,6 +144,7 @@ class Indexer:
             self.enforce_scope()
         except Exception as e:
             log.warning("scope enforcement failed: %s", e)
+        self._policy_rescan_pending = True  # done by the scheduler thread (can be a long scan)
         self._stop.clear()
         self.state.running = True
         self.state.started_at = time.time()
@@ -160,13 +161,26 @@ class Indexer:
                 log.warning("filesystem watcher not started: %s", e)
 
     def stop(self, timeout: float = 30.0) -> None:
+        """Stop within `timeout` seconds end to end. A job in progress gets a share of the budget;
+        if it is still stuck (typically a native extractor on a bad file) the extractor child is
+        killed, which fails that job so it is retried at the next start."""
+        deadline = time.time() + timeout
         self._stop.set()
         self._wake.set()
         if self._watcher:
             self._watcher.stop()
-        for t in (self._worker, self._scheduler):
-            if t and t.is_alive():
-                t.join(timeout)
+        if self._worker and self._worker.is_alive():
+            self._worker.join(max(0.5, timeout * 0.5))
+            if self._worker.is_alive():
+                killer = getattr(self.extractor, "kill_now", None)
+                if killer is not None:
+                    log.warning("worker still busy on %s at shutdown; killing the extractor child", self.state.current_path)
+                    killer()
+                self._worker.join(max(0.5, deadline - time.time()))
+                if self._worker.is_alive():
+                    log.error("indexer worker did not stop within %.0fs; the running job will be requeued at next start", timeout)
+        if self._scheduler and self._scheduler.is_alive():
+            self._scheduler.join(max(0.5, deadline - time.time()))
         self.state.running = False
 
     def pause(self) -> None:
@@ -377,7 +391,16 @@ class Indexer:
                 n = normalize_path(fe.path)
                 seen.add(n)
                 row = self.store.get_document(n)
-                if row is None or fe.size is None or fe.mtime is None or not self._stat_unchanged(row, fe.size, fe.mtime):
+                if row is None:
+                    batch.append((n, "index", PRIO_INCREMENTAL))
+                    continue
+                # compare against the FILESYSTEM, not the inventory's metadata: Windows Search can
+                # report a stale size/mtime for a file it has not re-gathered yet
+                try:
+                    st = os.stat(fe.path)
+                except OSError:
+                    continue  # vanished between enumeration and stat; tombstoning handles it
+                if not self._stat_unchanged(row, st.st_size, st.st_mtime):
                     batch.append((n, "index", PRIO_INCREMENTAL))
                     if len(batch) >= 2000:
                         added += self.store.enqueue_many(batch)
@@ -474,8 +497,15 @@ class Indexer:
 
     # ---------- loops ----------
     _full_requested = False
+    _policy_rescan_pending = False
 
     def _schedule_loop(self) -> None:
+        if self._policy_rescan_pending:
+            self._policy_rescan_pending = False
+            try:
+                self.enforce_secret_policy()
+            except Exception as e:
+                log.exception("secret policy rescan failed: %s", e)
         last_inc = 0.0
         # the incremental (GatherTime delta) pass runs on the first loop; the first full
         # reconcile is deferred so a boot does not start with a complete enumeration
@@ -575,6 +605,10 @@ class Indexer:
         removed from the config, or paths that now match an exclusion / lost their extension.
         Runs once at startup so 'stop indexing this folder' also means 'stop showing it'."""
         removed_root = removed_policy = 0
+        if not self.roots:
+            # an empty roots list is a configuration error, not an instruction to delete the index
+            log.warning("no roots configured: scope enforcement skipped (nothing is searchable until roots are set)")
+            return {"outside_roots": 0, "policy": 0}
         for doc_id, p, _ in list(self.store.iter_paths()):
             if not is_within(p, self.roots):
                 self.store.remove_document_id(doc_id)
@@ -586,6 +620,33 @@ class Indexer:
             log.info("scope enforcement: removed %d documents outside roots, %d by exclusion/extension policy", removed_root, removed_policy)
             self.state.docs_removed += removed_root + removed_policy
         return {"outside_roots": removed_root, "policy": removed_policy}
+
+    def enforce_secret_policy(self) -> int:
+        """When secret screening is (re)enabled, already-indexed, unchanged documents must be
+        screened too: scan stored chunk text and quarantine hits. Runs once per policy change
+        (tracked in meta 'policy:secret_scan'); returns the number of documents quarantined."""
+        want = "on" if self.cfg.indexing.skip_suspected_secrets else "off"
+        have = self.store.get_meta("policy:secret_scan")
+        if have == want:
+            return 0
+        n = 0
+        if want == "on":
+            log.info("secret screening enabled: scanning stored text of indexed documents")
+            for doc_id, disp, text in self.store.iter_documents_with_text():
+                hit = suspected_secret(text)
+                if hit:
+                    self.store.quarantine_document(doc_id, "secret_suspected", f"credential pattern: {hit}")
+                    self.store.record_error(disp, "policy", f"credential pattern: {hit} (found by policy rescan)")
+                    n += 1
+            log.info("secret screening rescan: %d documents quarantined", n)
+        else:
+            # screening turned off: previously quarantined documents are re-indexed on their next change;
+            # force it now so the index matches the policy
+            rows = self.store._r().execute("SELECT path FROM documents WHERE extract_status='secret_suspected'").fetchall()
+            n = self.store.enqueue_many((r[0], "index", PRIO_REEMBED) for r in rows)
+            log.info("secret screening disabled: %d previously quarantined documents re-queued", n)
+        self.store.set_meta("policy:secret_scan", want)
+        return n
 
     def _stat_unchanged(self, row, size: int, mtime: float) -> bool:
         """Same size and mtime as the stored row, and nothing left to do for it: an 'ok' document
@@ -658,11 +719,15 @@ class Indexer:
                     fields = dict(path=path_norm, display_path=disp, filename=os.path.basename(disp), extension=new_ext,
                                   root=root_for(disp, self.roots), size=info.size, mtime=info.mtime, ctime=info.ctime, last_seen=now)
                     # a filename-derived title follows the file; a heading-derived one does not change
-                    if row["title"] and row["title"] == derive_title("", row["display_path"]):
+                    retitle = bool(row["title"]) and row["title"] == derive_title("", row["display_path"]) and derive_title("", disp) != row["title"]
+                    if retitle:
                         fields["title"] = derive_title("", disp)
                     self.store.restore_document(int(row["id"]), **fields)
                     self.state.docs_moved += 1
-                    log.info("moved: %s -> %s (vectors kept)", row["display_path"], disp)
+                    if retitle:
+                        # the title is part of what gets embedded: refresh the vectors from stored chunk text
+                        self.store.enqueue(path_norm, "reembed", PRIO_REEMBED)
+                    log.info("moved: %s -> %s (vectors kept%s)", row["display_path"], disp, ", re-embed queued for new title" if retitle else "")
                     return "moved"
 
         ext = file_extension(disp)

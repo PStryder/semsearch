@@ -37,7 +37,8 @@ event log:
 |---|---|
 | Start type | Automatic (Delayed Start): the index is not needed in the first seconds after boot and Windows Search itself starts delayed |
 | Readiness | SCM sees `START_PENDING` (with wait hints) while the store opens, the model loads and the API binds; `RUNNING` is reported only after `GET /health` on the loopback port returns `ok` |
-| Stop / shutdown / pre-shutdown | All three set one stop event; the runtime stops the indexer (job in progress finishes or is requeued), drains the API, checkpoints and closes the database within `service.shutdown_timeout_s` (30 s default) |
+| Stop / shutdown / pre-shutdown | All three set one stop event; the runtime stops the indexer (job in progress finishes or is requeued), drains the API, checkpoints and closes the database within `service.shutdown_timeout_s` (30 s default). The budget is an end-to-end deadline: if the job in progress is stuck inside a native extractor, the extractor child process is killed at the halfway mark and the job is retried at the next start |
+| Configuration discovery | The installer bakes `--config <path>` into the service command line and sets `SEMSEARCH_CONFIG` machine-wide, so a custom `-DataDir` is honoured by both the service and the operator CLI |
 | Crash recovery | `sc failure`: restart after 5 s, 30 s, 120 s; failure counter resets after a day. Jobs left `running` by a crash are requeued at the next start; an interrupted document write is invisible because document, chunks and vectors commit in one transaction |
 | Single instance | A global named mutex (`Global\SemSearch.Service`); a second instance logs to the event log and exits with `ERROR_SERVICE_ALREADY_RUNNING` |
 | Priority | Below-normal process priority (`indexing.low_priority`) so background embedding never competes with foreground work |
@@ -283,6 +284,10 @@ installer grants to the operator, so no elevation is needed.
 ## Upgrade
 
 1. Build the new release (`build_release.ps1`).
+   A build that changes anything affecting vectors (model, revision, pooling, sequence length,
+   normalization, query/document prefixes: all part of the embedding fingerprint) makes the
+   service drop its vectors at first start and re-embed every document from stored chunk text
+   in the background; search works meanwhile and no file is re-read.
 2. From an elevated prompt in the new release directory: `.\install.ps1`.
    It stops the service, moves the old install to `SemSearch.previous`, copies the new runtime,
    keeps `%ProgramData%\SemSearch` untouched, re-registers the service, starts it and verifies
@@ -343,7 +348,7 @@ Rebuild from scratch: `semsearch rebuild --yes`.
 | Operation | What happens | Re-embedding |
 |---|---|---|
 | content modified | hash differs → re-extract, chunk; vectors reused for unchanged chunk text | only changed chunks |
-| rename (same volume) | new path, same NTFS file id + same hash → row re-pointed | none |
+| rename (same volume) | new path, same NTFS file id + same hash → row re-pointed; if the file name changes and the title was name-derived, a re-embed from stored chunk text is queued so the title header in the vectors matches | none, or a cheap re-embed on a name change |
 | move within a root (same volume) | as rename | none |
 | move to another configured root (same volume) | as rename | none |
 | move across volumes | new file id; old row tombstoned; new path indexed, vectors reused by chunk-text hash | none (hash reuse) |

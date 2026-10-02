@@ -192,10 +192,13 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
 
     @app.get("/document")
     def document(path: str, chunks: bool = False):
-        from .security import normalize_path
+        from .security import is_within, normalize_path
         s = st()
+        roots = cfg.normalized_roots()
+        if not roots or not is_within(path, roots):
+            raise HTTPException(404, "not indexed")  # same answer as unknown: never confirm paths outside the roots
         row = s.store.get_document(normalize_path(path))
-        if row is None:
+        if row is None or row["extract_status"] == "missing":
             raise HTTPException(404, "not indexed")
         d = dict(row)
         if chunks:

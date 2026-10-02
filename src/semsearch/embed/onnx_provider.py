@@ -180,7 +180,13 @@ class OnnxProvider:
 
     @property
     def fingerprint(self) -> str:
-        return f"onnx:{self.model_id}:{self.revision}:{getattr(self, 'dim', '?')}:{self.pooling}"
+        """Everything that changes the vectors: model, revision, dim, pooling, sequence length,
+        normalization and the query/document prefixes (hashed). Two configurations with
+        different fingerprints never share an index."""
+        import hashlib
+        pre = hashlib.blake2b(f"{self.query_prefix}\x00{self.document_prefix}".encode("utf-8"), digest_size=4).hexdigest()
+        return (f"onnx:{self.model_id}:{self.revision}:{getattr(self, 'dim', '?')}:{self.pooling}"
+                f":L{self.max_seq_length}:{'norm' if self.normalize else 'raw'}:p{pre}")
 
     # ---- inference ----
     def _run(self, session, texts: Sequence[str]) -> np.ndarray:
