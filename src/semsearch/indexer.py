@@ -142,11 +142,11 @@ class Indexer:
         n = self.store.requeue_running()
         if n:
             log.info("requeued %d jobs left running by a previous process", n)
-        try:
-            self.enforce_scope()
-        except Exception as e:
-            log.warning("scope enforcement failed: %s", e)
-        self._policy_rescan_pending = True  # done by the scheduler thread (can be a long scan)
+        # scope enforcement and the secret-policy rescan can take a minute on a large index
+        # (removing a thousand documents is a thousand transactions); they run on the scheduler
+        # thread so service readiness is not held up
+        self._scope_pending = True
+        self._policy_rescan_pending = True
         self._stop.clear()
         self.state.running = True
         self.state.started_at = time.time()
@@ -500,8 +500,15 @@ class Indexer:
     # ---------- loops ----------
     _full_requested = False
     _policy_rescan_pending = False
+    _scope_pending = False
 
     def _schedule_loop(self) -> None:
+        if self._scope_pending:
+            self._scope_pending = False
+            try:
+                self.enforce_scope()
+            except Exception as e:
+                log.exception("scope enforcement failed: %s", e)
         if self._policy_rescan_pending:
             self._policy_rescan_pending = False
             try:
