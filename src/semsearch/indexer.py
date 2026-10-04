@@ -69,6 +69,11 @@ def apply_title(chunks, title: str) -> None:
         ch.embed_text = f"{title}\n\n{ch.text}" if title else ch.text
 
 
+class JobCancelled(Exception):
+    """Raised inside a job when the indexer is stopping: the job stays `running` in the queue
+    and is requeued at the next start (requeue_running), nothing is written."""
+
+
 PREPROCESS_VERSION = 1  # bump when chunk_text / derive_title change what gets stored for the same bytes
 
 PRIO_USER = 1
@@ -103,6 +108,7 @@ class IndexerState:
     sources: dict[str, str] = field(default_factory=dict)
     last_error: str | None = None
     gpu_yielding: bool = False
+    phase: str = "idle"           # what the scheduler thread is doing (named in the stop log if it overruns)
 
     def throughput(self, window_s: float = 300.0) -> dict[str, float]:
         now = time.time()
@@ -193,11 +199,13 @@ class Indexer:
                     killer()
                 self._worker.join(max(0.5, deadline - time.time()))
                 if self._worker.is_alive():
-                    log.error("indexer worker did not stop within %.0fs; the running job will be requeued at next start", timeout)
+                    log.error("indexer worker did not stop within %.0fs (job: %s); the running job will be requeued at next start",
+                              timeout, self.state.current_path)
                     clean = False
         if self._scheduler and self._scheduler.is_alive():
             self._scheduler.join(max(0.5, deadline - time.time()))
             if self._scheduler.is_alive():
+                log.error("indexer scheduler did not stop within %.0fs (phase: %s)", timeout, self.state.phase)
                 clean = False
         self.state.running = False
         return clean
@@ -246,10 +254,16 @@ class Indexer:
         def out_of_scope(path: str) -> bool:
             return not is_within(path, roots) or reject(path) or file_extension(path) not in allowed
 
-        n = self.store.prune_pending_jobs(out_of_scope)
+        n = self.store.prune_pending_jobs(out_of_scope, should_stop=lambda: self.stopping)
         if n:
             log.info("queue pruned: %d pending jobs no longer in scope", n)
         return n
+
+    @property
+    def stopping(self) -> bool:
+        """The stop event is set and the threads are still winding down. Only then are sweeps
+        and jobs cancelled; a job processed synchronously after a completed stop runs normally."""
+        return self._stop.is_set() and self.state.running
 
     def pause(self) -> None:
         self.state.paused = True
@@ -500,6 +514,8 @@ class Indexer:
             self.store.record_error(root, "reconcile", f"enumeration returned {len(seen)} of {known} known files; tombstoning skipped")
             return 0
         for doc_id, p, _ in list(self.store.iter_paths(root)):
+            if self.stopping:
+                return removed
             if p in seen:
                 continue
             if os.path.exists(p) and not is_excluded(p, self.cfg.excludes):
@@ -521,7 +537,7 @@ class Indexer:
         stored chunk text). Pages by id so the whole backlog is queued in one pass."""
         total = 0
         after = 0
-        while True:
+        while not self.stopping:
             rows = self.store.documents_needing_embedding(self.fingerprint, batch_docs, after_id=after)
             if not rows:
                 break
@@ -576,19 +592,31 @@ class Indexer:
 
     def _run_pending_policy(self) -> None:
         """Scope enforcement and the secret-policy rescan: at start, and again whenever the
-        roots/exclusions are reconfigured at runtime."""
-        if self._scope_pending:
+        roots/exclusions are reconfigured at runtime. Each sweep is cancellable; an interrupted
+        one is repeated at the next start."""
+        if self._scope_pending and not self.stopping:
             self._scope_pending = False
             try:
+                self._phase("prune_queue")
+                self.prune_queue()
+                self._phase("enforce_scope")
                 self.enforce_scope()
             except Exception as e:
                 log.exception("scope enforcement failed: %s", e)
-        if self._policy_rescan_pending:
+            finally:
+                self._phase("idle")
+        if self._policy_rescan_pending and not self.stopping:
             self._policy_rescan_pending = False
             try:
+                self._phase("secret_policy_rescan")
                 self.enforce_secret_policy()
             except Exception as e:
                 log.exception("secret policy rescan failed: %s", e)
+            finally:
+                self._phase("idle")
+
+    def _phase(self, name: str) -> None:
+        self.state.phase = name
 
     def _schedule_loop(self) -> None:
         last_inc = 0.0
@@ -600,6 +628,7 @@ class Indexer:
                 self._run_pending_policy()
                 if self._full_requested:
                     self._full_requested = False
+                    self._phase("full_build")
                     self.full_build()
                     last_inc = time.time()
                     last_rec = time.time()
@@ -607,20 +636,27 @@ class Indexer:
                     # first start, or a root added to the configuration since the last build:
                     # enumerate now (roots already built are a cheap stat pass) instead of
                     # waiting for the deferred reconcile
+                    self._phase("full_build")
                     self.full_build()
                     last_inc = last_rec = time.time()
                 now = time.time()
-                if now - last_inc >= self.cfg.indexing.poll_interval_s and not self.state.paused:
+                if now - last_inc >= self.cfg.indexing.poll_interval_s and not self.state.paused and not self._stop.is_set():
+                    self._phase("incremental")
                     self.incremental(force=False)
+                    self._phase("reembed_stale")
                     self.reembed_stale()
                     last_inc = now
-                if now - last_rec >= self.cfg.indexing.reconcile_interval_s and not self.state.paused:
+                if now - last_rec >= self.cfg.indexing.reconcile_interval_s and not self.state.paused and not self._stop.is_set():
+                    self._phase("reconcile")
                     self.reconcile()
                     last_rec = now
+                self._phase("vacuum")
                 self._maybe_vacuum(now)
             except Exception as e:
                 log.exception("scheduler error: %s", e)
                 self.state.last_error = f"scheduler: {e}"
+            finally:
+                self._phase("idle")
             self._stop.wait(min(5.0, self.cfg.indexing.poll_interval_s))
 
     def _maybe_vacuum(self, now: float) -> None:
@@ -655,6 +691,9 @@ class Indexer:
                 want_bulk = self.state.full_build_in_progress or self.store.queue_stats()["pending"] > self.cfg.embedding.bulk_threshold
                 self._set_bulk(want_bulk and not self._bulk_gpu_busy_elsewhere())
                 self.process_job(job)
+            except JobCancelled:
+                log.info("job %s interrupted by shutdown; it stays queued", job["path"])
+                break
             except Exception as e:
                 log.exception("job %s failed: %s", job["path"], e)
                 self.store.fail_job(int(job["id"]), str(e), self.cfg.indexing.max_attempts)
@@ -736,6 +775,10 @@ class Indexer:
             return {"outside_roots": 0, "policy": 0}
         reject = compile_excludes(self.cfg.excludes)
         for doc_id, p, _ in list(self.store.iter_paths()):
+            if self.stopping:
+                log.info("scope enforcement interrupted by shutdown (%d removed so far); it resumes at the next start", removed_root + removed_policy)
+                self._scope_pending = True
+                break
             if not is_within(p, self.roots):
                 self.store.remove_document_id(doc_id)
                 removed_root += 1
@@ -770,6 +813,10 @@ class Indexer:
             log.info("secret screening policy changed: rescanning stored text of indexed documents")
             allow = self.cfg.indexing.secret_scan_allow
             for doc_id, disp, text in self.store.iter_documents_with_text():
+                if self.stopping:
+                    log.info("secret screening rescan interrupted by shutdown; it resumes at the next start")
+                    self._policy_rescan_pending = True
+                    return n
                 if is_excluded(disp, allow):
                     continue
                 hit = suspected_secret(text)
@@ -986,7 +1033,15 @@ class Indexer:
                 if hashes[i] not in uniq:
                     uniq[hashes[i]] = len(texts)
                     texts.append(chunks[i].for_embedding)
-            emb = self.embedder.embed(texts, "document")
+            # batches with a stop check between them: a 400-chunk document on the integrated GPU
+            # takes a minute, which must not hold the stop of the service past its budget
+            bs = max(1, int(getattr(self.cfg.embedding, "batch_size", 32)))
+            parts = []
+            for b in range(0, len(texts), bs):
+                if self.stopping:
+                    raise JobCancelled("indexer stopping")
+                parts.append(self.embedder.embed(texts[b:b + bs], "document"))
+            emb = np.concatenate(parts, axis=0)
             for i in todo_idx:
                 vectors[i] = emb[uniq[hashes[i]]]
         return vectors, len(todo_idx), len(chunks) - len(todo_idx), (time.perf_counter() - t0) * 1000
@@ -1041,7 +1096,7 @@ class Indexer:
                          "removed": s.docs_removed, "failed": s.docs_failed, "chunks_embedded": s.chunks_embedded, "chunks_reused": s.chunks_reused,
                          "bytes_hashed": s.bytes_hashed, "extract_ms_total": round(s.extract_ms), "embed_ms_total": round(s.embed_ms)},
             "throughput": s.throughput(), "sources": s.sources, "roots": [display_path(r) for r in self.cfg.roots],
-            "watcher": bool(self._watcher and self._watcher.is_alive()),
+            "watcher": bool(self._watcher and self._watcher.is_alive()), "phase": s.phase,
             "extractor_restarts": getattr(self.extractor, "restarts", 0),
             "last_error": s.last_error,
             "failed_jobs": self.store.failed_jobs(20),

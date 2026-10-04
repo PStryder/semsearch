@@ -89,8 +89,10 @@ class ServiceRuntime:
         from .api import create_app
         app = create_app(self.cfg, self.state)
         # log_config=None: keep our logging setup instead of uvicorn's dictConfig (which probes the console)
+        # timeout_graceful_shutdown: an in-flight request (a long maintenance call) must not hold the
+        # API thread past the stop budget; the handlers themselves check the indexer's stop flag
         config = uvicorn.Config(app, host=self.cfg.api.host, port=self.cfg.api.port, log_level="warning",
-                                access_log=self.cfg.api.log_requests, log_config=None)
+                                access_log=self.cfg.api.log_requests, log_config=None, timeout_graceful_shutdown=5)
         self.server = uvicorn.Server(config)
         self.server_thread = threading.Thread(target=self.server.run, name="semsearch-api", daemon=True)
         self.server_thread.start()
@@ -150,6 +152,11 @@ class ServiceRuntime:
                 except Exception as e:  # noqa: BLE001
                     log.warning("close: %s", e)
             else:
+                # the job object kills the extractor child when this process ends; do it explicitly
+                # too, so neither the installer nor the SCM ever sees a lingering pythonw
+                killer = getattr(self.state.extractor, "kill_now", None)
+                if killer is not None:
+                    killer()
                 log.warning("threads still running at the deadline: leaving the store open for the process exit (WAL is consistent)")
         self.stopped_clean = clean
         log.info("service stopped in %.1fs (%s)", time.time() - t0, "clean" if clean else "forced")
@@ -324,11 +331,16 @@ def _make_service_class():
                 clean = self.runtime.stop()
                 servicemanager.LogInfoMsg("semsearch stopped" if clean else "semsearch stopped (forced: a thread overran the shutdown budget)")
                 self.ReportServiceStatus(win32service.SERVICE_STOPPED)
-                if not clean:
-                    # a thread stuck in native code (inference, COM, a filter) would otherwise keep
-                    # the process alive after the SCM was told we stopped; end it here, bounded
-                    logging.shutdown()
-                    os._exit(0)
+                # The SCM has been told we are stopped and everything that must be durable is
+                # (store closed and checkpointed, or left consistent in the WAL). Ending the process
+                # here is deterministic; letting the interpreter finalize is not: on the live service
+                # a 3.0 s clean stop was followed by a process that was still alive when the installer
+                # gave up waiting (2026-10-04), while a standalone probe with the same DirectML
+                # sessions exited promptly, so whatever lingers is held by the service host
+                # (COM apartments, PDH, servicemanager). Nothing after this line has value.
+                log.info("service process exiting (%s stop)", "clean" if clean else "forced")
+                logging.shutdown()
+                os._exit(0)
             except ConfigError as e:
                 servicemanager.LogErrorMsg(f"semsearch configuration error: {e}")
                 log.error("configuration error: %s", e)

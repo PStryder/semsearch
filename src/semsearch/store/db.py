@@ -780,12 +780,13 @@ class Store:
         with self.lock:
             self.conn.execute("DELETE FROM jobs")
 
-    def prune_pending_jobs(self, reject) -> int:
+    def prune_pending_jobs(self, reject, should_stop=None) -> int:
         """Delete pending jobs whose path `reject(path)` says is out of scope now (new exclusion,
-        removed root). Scans in batches so a queue of hundreds of thousands stays cheap."""
+        removed root). Scans in batches so a queue of hundreds of thousands stays cheap, and
+        stops between batches when `should_stop()` says so (shutdown)."""
         removed = 0
         last = 0
-        while True:
+        while not (should_stop and should_stop()):
             rows = self._r().execute("SELECT id, path FROM jobs WHERE state='pending' AND id > ? ORDER BY id LIMIT 5000", (last,)).fetchall()
             if not rows:
                 break
