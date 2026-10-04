@@ -141,8 +141,12 @@ def test_vacuum_and_backup(built, root, tmp_path):
     c.close()
     # still works through the API
     with TestClient(create_app(built.cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as cl:
-        r = cl.post("/backup", json={"path": str(tmp_path / "bk" / "via-api.db")}).json()
-        assert r["bytes"] > 0
+        r = cl.post("/backup", json={"path": "via-api.db"}).json()  # relative: under <data_dir>/backups
+        assert r["bytes"] > 0 and (built.cfg.backup_dir / "via-api.db").is_file()
+        # the admin token is not write authority over the filesystem: outside the backup dir is refused
+        assert cl.post("/backup", json={"path": str(tmp_path / "elsewhere.db")}).status_code == 403
+        assert cl.post("/backup", json={"path": str(built.cfg.backup_dir / ".." / "escape.db")}).status_code == 403
+        assert not (tmp_path / "elsewhere.db").exists()
 
 
 # ---------------------------------------------------------------- GPU courtesy parsing

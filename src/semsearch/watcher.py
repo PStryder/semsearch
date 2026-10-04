@@ -32,6 +32,7 @@ class DirectoryWatcher:
         self._pending: dict[str, tuple[str, float, str | None]] = {}
         self._lock = threading.Lock()
         self._flusher: threading.Thread | None = None
+        self._handles: dict[str, object] = {}
 
     def start(self) -> None:
         import win32file  # noqa: F401  (fail early if pywin32 missing)
@@ -42,8 +43,20 @@ class DirectoryWatcher:
         self._flusher = threading.Thread(target=self._flush_loop, name="semsearch-watch-flush", daemon=True)
         self._flusher.start()
 
-    def stop(self) -> None:
+    def stop(self, timeout_s: float = 3.0) -> bool:
+        """Signal every thread, cancel the pending directory reads, and wait (bounded) for the
+        threads to exit. Returns True when all of them did."""
         self._stop.set()
+        for h in list(self._handles.values()):
+            try:
+                import win32file
+                win32file.CancelIoEx(h, None)
+            except Exception:
+                pass
+        deadline = time.time() + timeout_s
+        for t in self._threads + ([self._flusher] if self._flusher else []):
+            t.join(max(0.05, deadline - time.time()))
+        return not self.is_alive()
 
     def is_alive(self) -> bool:
         return any(t.is_alive() for t in self._threads)
@@ -59,6 +72,7 @@ class DirectoryWatcher:
         except pywintypes.error as e:
             log.warning("cannot watch %s: %s", root, e)
             return
+        self._handles[root] = h
         import win32event
         overlapped = pywintypes.OVERLAPPED()
         overlapped.hEvent = win32event.CreateEvent(None, False, False, None)
@@ -93,8 +107,11 @@ class DirectoryWatcher:
                     else:
                         self._queue(a, p, None)
             except Exception as e:
+                if self._stop.is_set():
+                    break  # CancelIoEx from stop(): the aborted read is expected
                 log.warning("watcher %s error: %s", root, e)
                 time.sleep(2.0)
+        self._handles.pop(root, None)
         try:
             h.Close()
         except Exception:

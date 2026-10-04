@@ -639,7 +639,10 @@ class Store:
             self._replace_chunks_inner(tx, doc_id, chunks, vectors, fingerprint)
             return doc_id
 
-    def set_vectors(self, chunk_ids: Sequence[int], vectors: np.ndarray, doc_id: int, fingerprint: str) -> None:
+    def set_vectors(self, chunk_ids: Sequence[int], vectors: np.ndarray, doc_id: int, fingerprint: str,
+                    text_hashes: Sequence[str] | None = None) -> None:
+        """Replace a document's vectors (re-embed). `text_hashes`, when given, rewrites the
+        chunks' reuse keys in the same transaction so they match the new embedding input."""
         with self.lock, self._tx() as tx:
             ids = [int(c) for c in chunk_ids]
             for i in range(0, len(ids), 500):
@@ -647,6 +650,9 @@ class Store:
                 self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
             for cid, v in zip(ids, vectors):
                 self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))  # vec0 rejects OR REPLACE
+            if text_hashes is not None:
+                assert len(text_hashes) == len(ids)
+                self.conn.executemany("UPDATE chunks SET text_hash=? WHERE id=?", list(zip(text_hashes, ids)))
             self.conn.execute("UPDATE documents SET embedding_fingerprint=? WHERE id=?", (fingerprint, doc_id))
             tx.removed += ids
             tx.added.append((ids, vectors))
@@ -662,17 +668,41 @@ class Store:
                                  (vec_to_blob(q), int(k))).fetchall()
         return [(int(r[0]), 1.0 - float(r[1])) for r in rows]
 
-    def fts(self, match_expr: str, limit: int) -> list[tuple[int, int, float]]:
-        """Return [(chunk_id, doc_id, bm25_score)] where higher score is better."""
+    @staticmethod
+    def _like_escape(s: str) -> str:
+        # SQLite LIKE has no bracket escapes; use ESCAPE so '_' and '%' in the needle are literal
+        return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+    def _doc_filter_sql(self, roots: Sequence[str] | None, extensions: Sequence[str] | None, alias: str = "d") -> tuple[str, list]:
+        """WHERE fragments restricting documents to normalized root prefixes / extensions, so a
+        filtered search ranks within the filter instead of filtering a global top-k."""
+        where: list[str] = []
+        params: list = []
+        if roots:
+            where.append("(" + " OR ".join(f"({alias}.path = ? OR {alias}.path LIKE ? ESCAPE '\\')" for _ in roots) + ")")
+            for r in roots:
+                # escape the prefix INCLUDING its trailing separator, then the bare wildcard
+                params += [r, self._like_escape(r.rstrip("\\") + "\\") + "%"]
+        if extensions:
+            exts = list(extensions)
+            where.append(f"{alias}.extension IN ({','.join('?' * len(exts))})")
+            params += exts
+        return (" AND " + " AND ".join(where)) if where else "", params
+
+    def fts(self, match_expr: str, limit: int, roots: Sequence[str] | None = None, extensions: Sequence[str] | None = None) -> list[tuple[int, int, float]]:
+        """Return [(chunk_id, doc_id, bm25_score)] where higher score is better. Optional root /
+        extension filters are applied inside the query (the top-k is taken within the filter)."""
+        flt, params = self._doc_filter_sql(roots, extensions)
+        join = " JOIN documents d ON d.id = c.doc_id" if flt else ""
         rows = self._r().execute(
-            "SELECT f.rowid, c.doc_id, bm25(chunks_fts) AS r FROM chunks_fts f JOIN chunks c ON c.id = f.rowid "
-            "WHERE chunks_fts MATCH ? ORDER BY r LIMIT ?", (match_expr, int(limit))).fetchall()
+            f"SELECT f.rowid, c.doc_id, bm25(chunks_fts) AS r FROM chunks_fts f JOIN chunks c ON c.id = f.rowid{join} "
+            f"WHERE chunks_fts MATCH ?{flt} ORDER BY r LIMIT ?", [match_expr, *params, int(limit)]).fetchall()
         return [(int(r[0]), int(r[1]), -float(r[2])) for r in rows]
 
-    def filename_like(self, needle: str, limit: int = 200) -> list[tuple[int, str]]:
-        # SQLite LIKE has no bracket escapes; use ESCAPE so '_' and '%' in the needle are literal
-        esc = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-        rows = self._r().execute("SELECT id, filename FROM documents WHERE filename LIKE ? ESCAPE '\\' LIMIT ?", ("%" + esc + "%", int(limit))).fetchall()
+    def filename_like(self, needle: str, limit: int = 200, roots: Sequence[str] | None = None, extensions: Sequence[str] | None = None) -> list[tuple[int, str]]:
+        flt, params = self._doc_filter_sql(roots, extensions)
+        rows = self._r().execute(f"SELECT d.id, d.filename FROM documents d WHERE d.filename LIKE ? ESCAPE '\\'{flt} LIMIT ?",
+                                 ["%" + self._like_escape(needle) + "%", *params, int(limit)]).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
     def filename_glob(self, pattern: str, limit: int = 200) -> list[tuple[int, str]]:
@@ -822,6 +852,22 @@ class Store:
         finally:
             out.close()
         return {"path": dest, "bytes": os.path.getsize(dest), "seconds": round(time.perf_counter() - t0, 2)}
+
+    def invalidate_content(self) -> int:
+        """Force re-extraction of every present document: clear the stored hash and mtime so the
+        indexer's unchanged/touched shortcuts miss, and queue an index job per document. The
+        old chunks and vectors stay searchable until each document is rewritten."""
+        with self.lock, self._tx():
+            rows = self.conn.execute("SELECT path FROM documents WHERE extract_status != 'missing'").fetchall()
+            self.conn.execute("UPDATE documents SET content_hash='', mtime=NULL WHERE extract_status != 'missing'")
+        return self.enqueue_many((r[0], "index", 5) for r in rows)
+
+    def vector_count(self) -> int:
+        if self.cache is not None:
+            return len(self.cache)
+        if not self._vec_table_exists():
+            return 0
+        return int(self._r().execute("SELECT count(*) FROM vec_chunks").fetchone()[0])
 
     def wipe(self) -> None:
         """Delete all documents/chunks/vectors/jobs (keeps schema and model binding)."""

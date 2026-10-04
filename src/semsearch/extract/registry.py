@@ -78,7 +78,9 @@ def build_default_registry(cfg: Config) -> ExtractorRegistry:
     text_exts = set(e.lower() for e in cfg.text_extensions) | set(e.lower() for e in cfg.extra_extensions)
     text = TextExtractor(text_exts, max_chars=cfg.indexing.max_text_chars)
     pdf = PdfExtractor(max_chars=cfg.indexing.max_text_chars)
-    docx, pptx, xlsx = DocxExtractor(), PptxExtractor(), XlsxExtractor(max_chars=cfg.indexing.max_text_chars)
+    mx = cfg.indexing.max_text_chars
+    expanded = cfg.indexing.max_expanded_bytes
+    docx, pptx, xlsx = DocxExtractor(max_chars=mx, max_expanded=expanded), PptxExtractor(max_chars=mx, max_expanded=expanded), XlsxExtractor(max_chars=mx, max_expanded=expanded)
     ifilter = None
     if sys.platform == "win32":
         try:

@@ -170,6 +170,18 @@ invalidates it; cached responses carry `"cached": true`.
 
 ## Security posture
 
+**Trust boundary, stated plainly.** The service reads files as *its own* account (the
+`NT SERVICE\SemSearch` virtual account granted read on each root, or whatever identity the
+installer was told to use) and stores the extracted text in its index. The API answers any
+process on the loopback interface; callers are not impersonated and their NTFS rights are not
+checked against the source file. So: everything the service account can read, any local
+account can search, and a later ACL change on a file does not revoke what the index already
+holds. On a single-user workstation this is the intended design. On a machine with several
+interactive accounts, set `api.read_token: true` (reads then need the token file that only the
+operator can read) or give each user their own instance with their own data directory. The
+Windows Search security trimming described in docs/windows-service.md bounds what the service
+*sees*, not who may *ask*.
+
 - API binds 127.0.0.1; a non-loopback bind requires `api.allow_non_loopback: true`
 - Every request's Host header must be a loopback name (or a configured `allowed_hosts` entry);
   anything else gets 421. This closes DNS rebinding, where a web page resolves its own
@@ -183,14 +195,32 @@ invalidates it; cached responses carry `"cached": true`.
   `/document` refuse anything outside the configured roots regardless of what the store holds.
   An empty roots list makes nothing searchable but never deletes the index (a configuration
   mistake must not destroy data)
-- Turning secret screening on later rescans the stored text of already-indexed, unchanged
-  documents at the next start and quarantines hits; turning it off re-queues them
-- No endpoint writes to, moves or deletes source files; index mutations touch only the sidecar DB
+- The screening policy's identity (on/off plus the exemption list) is recorded in the store;
+  any change rescans the stored text of already-indexed, unchanged documents at the next start:
+  new hits are quarantined, quarantined documents that the new policy allows are re-queued, and
+  turning screening off re-queues everything quarantined. Screening is a heuristic over the
+  first 400k characters, not a guarantee
+- No endpoint writes to, moves or deletes source files; index mutations touch only the sidecar
+  DB, and `/backup` writes only under `<data_dir>/backups`
 - Every indexed path must lie inside a configured root after normalization; `..`, long-path
   prefixes and `file:` URLs are normalized before the check
-- Reparse points are not followed by default, and a path that passes through one is rejected
-  even if the final component is a plain file; hard-link counts are recorded in `StatInfo`
+- Reparse points are not followed by default: a root that is itself a junction or symlink is
+  not walked (warned at startup), a path that passes through one is rejected even if the final
+  component is a plain file, and the per-directory reparse cache expires after two minutes so a
+  directory later replaced by a junction is caught. With `follow_reparse_points: true` the
+  resolved target must still lie inside a configured root. Hard-link counts are recorded in
+  `StatInfo`. Known limit: the stat, the hash and the extractor open the path separately; a
+  file swapped between those opens is detected by a final stat (identity, size, mtime) and
+  re-queued, which narrows but does not close that race to a single handle
 - Cloud/offline placeholder files are not recalled
-- No telemetry, no network calls except the one-time model download (disable with
-  `embedding.allow_download: false` and point `embedding.model` at a local directory)
-- Native extractors run in a child process with a timeout; a hung filter costs one restart
+- No telemetry, no network calls except the one-time model download (a release bundles the
+  pinned model, so an installed service never reaches the network; disable downloads with
+  `embedding.allow_download: false`)
+- Native extractors run in a child process with a timeout and, on Windows, inside a job object
+  with a commit limit (`indexing.extractor_memory_mb`) that also kills the child with the
+  service; Office containers are size-checked before parsing (`indexing.max_expanded_bytes`)
+  and text is capped while it is collected. A hung filter costs one restart. This is fault
+  isolation, not a privilege sandbox: the child runs with the service's rights
+- Chunking parameters and the chunker/title algorithm version form a preprocessing identity
+  (`policy:preprocess` in the store); a change re-extracts every document instead of serving
+  chunks that the current configuration would not have produced

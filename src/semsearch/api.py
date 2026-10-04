@@ -88,13 +88,23 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     def st() -> AppState:
         return app.state.st
 
-    def require_admin(request: Request) -> None:
-        """Mutating / maintenance endpoints need the admin token from <state_dir>/admin.token.
-        Search, health, status and stats stay open to any local process."""
+    def _token_ok(request: Request) -> bool:
         tok = request.headers.get("x-semsearch-token", "")
         expected = getattr(st(), "admin_token", None)
-        if not expected or not secrets.compare_digest(tok, expected):
+        return bool(expected) and secrets.compare_digest(tok, expected)
+
+    def require_admin(request: Request) -> None:
+        """Mutating / maintenance endpoints need the admin token from <state_dir>/admin.token.
+        Search, health, status and stats stay open to any local process unless api.read_token."""
+        if not _token_ok(request):
             raise HTTPException(403, "admin token required (X-SemSearch-Token; see <state_dir>/admin.token)")
+
+    def require_read(request: Request) -> None:
+        """Read endpoints: open by default (single-user workstation); with api.read_token the same
+        token gates them, which is the mitigation for a machine shared by several local accounts
+        (the index holds text the service account could read, whoever asks)."""
+        if cfg.api.read_token and not _token_ok(request):
+            raise HTTPException(403, "token required for reads on this installation (api.read_token); see <state_dir>/admin.token")
 
     @app.get("/health")
     def health():
@@ -104,7 +114,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
                 "windows_search": s.windows is not None, "documents": s.store.count_documents()}
 
     @app.post("/search")
-    def search_post(req: SearchRequest):
+    def search_post(req: SearchRequest, _: None = Depends(require_read)):
         try:
             return st().retriever.search(req.query, req.mode, req.limit, req.roots, req.extensions)
         except ValueError as e:
@@ -112,14 +122,14 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
 
     @app.get("/search")
     def search_get(q: str = Query(..., min_length=1), mode: str | None = None, limit: int = Query(20, ge=1, le=200),
-                   ext: str | None = None, root: str | None = None):
+                   ext: str | None = None, root: str | None = None, _: None = Depends(require_read)):
         try:
             return st().retriever.search(q, mode, limit, [root] if root else None, ext.split(",") if ext else None)
         except ValueError as e:
             raise HTTPException(400, str(e))
 
     @app.get("/status")
-    def status():
+    def status(_: None = Depends(require_read)):
         s = st()
         ws = catalog_status() if s.windows is not None else {"available": False}
         if ws.get("available"):
@@ -135,7 +145,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
                 "pid": os.getpid()}
 
     @app.get("/stats")
-    def stats():
+    def stats(_: None = Depends(require_read)):
         s = st()
         d = s.store.stats()
         d["indexer"] = s.indexer.status()["counters"]
@@ -143,7 +153,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         return d
 
     @app.get("/errors")
-    def errors(limit: int = Query(100, ge=1, le=1000), stage: str | None = None):
+    def errors(limit: int = Query(100, ge=1, le=1000), stage: str | None = None, _: None = Depends(require_read)):
         s = st()
         errs = s.store.recent_errors(limit if not stage else limit * 10)
         if stage:
@@ -152,8 +162,17 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
 
     @app.post("/backup")
     def backup(req: PathRequest, _: None = Depends(require_admin)):
-        """Consistent online copy of the index to a path the service account can write."""
-        return st().store.backup(req.path)
+        """Consistent online copy of the index. The destination must lie under <data_dir>/backups
+        (or `api.backup_dir`): the admin token is search-maintenance authority, not a licence to
+        write SQLite files wherever the service account can."""
+        from .security import is_within, normalize_path
+        base = cfg.backup_dir
+        dest = os.path.abspath(os.path.join(base, req.path)) if not os.path.isabs(req.path) else os.path.abspath(req.path)
+        if not is_within(dest, [str(base)]) or normalize_path(dest) == normalize_path(str(base)):
+            raise HTTPException(403, f"backup destination must be a file under {base}")
+        if os.path.exists(dest) and not os.path.isfile(dest):
+            raise HTTPException(400, "backup destination exists and is not a file")
+        return st().store.backup(dest)
 
     @app.post("/index/path")
     def index_path(req: PathRequest, _: None = Depends(require_admin)):
@@ -204,7 +223,9 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         return st().indexer.reconcile()
 
     @app.get("/document")
-    def document(path: str, chunks: bool = False):
+    def document(path: str, chunks: bool = False, offset: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=500), _: None = Depends(require_read)):
+        """Stored metadata for one indexed file, optionally a page of its chunks (`offset`/`limit`;
+        `chunk_count` in the answer says how many there are)."""
         from .security import is_within, normalize_path
         s = st()
         roots = cfg.normalized_roots()
@@ -215,13 +236,18 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             raise HTTPException(404, "not indexed")
         d = dict(row)
         if chunks:
-            d["chunks"] = [dict(c) for c in s.store.chunks_for_doc(int(row["id"]))]
+            allc = s.store.chunks_for_doc(int(row["id"]))
+            d["chunk_count"] = len(allc)
+            d["chunks"] = [dict(c) for c in allc[offset: offset + limit]]
         return d
 
     @app.exception_handler(Exception)
     async def _unhandled(request, exc):
-        log.exception("unhandled error: %s", exc)
-        return JSONResponse(status_code=500, content={"error": str(exc)})
+        # the log gets the traceback; the client gets a reference, not the exception text
+        # (which can carry file paths and library internals)
+        ref = secrets.token_hex(4)
+        log.exception("unhandled error [%s]: %s", ref, exc)
+        return JSONResponse(status_code=500, content={"error": "internal error", "ref": ref, "hint": "see the service log"})
 
     return app
 

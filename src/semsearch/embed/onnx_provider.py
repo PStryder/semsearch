@@ -31,9 +31,43 @@ from .base import Kind, l2_normalize
 log = logging.getLogger(__name__)
 
 
-def _resolve_model_files(model: str, revision: str | None, allow_download: bool) -> tuple[Path, Path, str]:
+def _files_digest(*paths: Path) -> str:
+    import hashlib
+    h = hashlib.blake2b(digest_size=8)
+    for p in paths:
+        with open(p, "rb") as f:
+            for block in iter(lambda: f.read(1 << 20), b""):
+                h.update(block)
+    return h.hexdigest()
+
+
+def bundled_model_dir(model: str, revision: str | None, cache_dir: str | os.PathLike | None = None) -> Path | None:
+    """A release can ship the model as plain files under <cache>/bundled/<owner--name>/<commit>/
+    (no Hugging Face cache layout, no symlinks, no network). Returns that snapshot directory
+    when present; its name is the commit, so the fingerprint equals a downloaded snapshot's."""
+    base = Path(cache_dir or os.environ.get("HF_HOME") or "")
+    if not str(base):
+        return None
+    d = base / "bundled" / model.replace("/", "--")
+    if not d.is_dir():
+        return None
+    if revision:
+        snap = d / revision
+        return snap if (snap / "tokenizer.json").is_file() else None
+    snaps = [s for s in d.iterdir() if s.is_dir() and (s / "tokenizer.json").is_file()]
+    return snaps[0] if len(snaps) == 1 else None
+
+
+def _resolve_model_files(model: str, revision: str | None, allow_download: bool, cache_dir: str | os.PathLike | None = None) -> tuple[Path, Path, str]:
     """Return (model.onnx, tokenizer.json, resolved_revision)."""
     p = Path(os.path.expandvars(os.path.expanduser(model)))
+    bundled = None if p.is_dir() else bundled_model_dir(model, revision, cache_dir)
+    if bundled is not None:
+        onnx = bundled / "onnx" / "model.onnx"
+        if not onnx.is_file():
+            onnx = bundled / "model.onnx"
+        if onnx.is_file():
+            return onnx, bundled / "tokenizer.json", bundled.name
     if p.is_dir():
         onnx = p / "model.onnx"
         if not onnx.is_file():
@@ -41,9 +75,13 @@ def _resolve_model_files(model: str, revision: str | None, allow_download: bool)
         tok = p / "tokenizer.json"
         if not onnx.is_file() or not tok.is_file():
             raise FileNotFoundError(f"model dir {p} must contain model.onnx (or onnx/model.onnx) and tokenizer.json")
-        return onnx, tok, "local"
+        # a local directory has no revision: hash the files so replacing the weights or the
+        # tokenizer in place changes the fingerprint (and triggers a re-embed) like a new revision
+        return onnx, tok, "local-" + _files_digest(onnx, tok)
     from huggingface_hub import snapshot_download
-    patterns = ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "config.json", "special_tokens_map.json"]
+    # README and LICENSE ride along: the model card carries the licence terms that must be kept with a bundled copy
+    patterns = ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "config.json", "special_tokens_map.json",
+                "README.md", "LICENSE", "LICENSE.md", "LICENSE.txt"]
     try:
         snap = snapshot_download(model, revision=revision, allow_patterns=patterns, local_files_only=True)
     except Exception:
@@ -125,6 +163,9 @@ class OnnxProvider:
         }
         self._sessions: dict[tuple[str, int], object] = {}
         self._lock = threading.Lock()
+        # DirectML forbids concurrent Run() calls on one session (CPU sessions are thread-safe
+        # and queries benefit from running in parallel there); one execution lock per GPU session
+        self._run_locks: dict[tuple[str, int], threading.Lock] = {}
         self.bulk_mode = False
         first = self._session(self.devices["steady"])
         self.input_names = {i.name for i in first.get_inputs()}
@@ -171,6 +212,17 @@ class OnnxProvider:
             self._sessions[dev] = s
             return s
 
+    def _run_lock_for(self, dev: tuple[str, int]) -> threading.Lock | None:
+        """Serialize Run() on GPU sessions (DirectML requires it; one lock per session, so the
+        steady, bulk and query roles only contend when they resolve to the same adapter)."""
+        if dev[0] == "cpu":
+            return None
+        with self._lock:
+            lk = self._run_locks.get(dev)
+            if lk is None:
+                lk = self._run_locks[dev] = threading.Lock()
+            return lk
+
     def _pad_id(self) -> int:
         try:
             pid = self.tokenizer.token_to_id("[PAD]")
@@ -212,10 +264,16 @@ class OnnxProvider:
         if not texts:
             return np.zeros((0, getattr(self, "dim", 0)), dtype=np.float32)
         role = "query" if kind == "query" else ("bulk" if self.bulk_mode else "steady")
-        session = self._session(self.devices[role])
+        dev = self.devices[role]
+        session = self._session(dev)
         chunks = []
+        run_lock = self._run_lock_for(dev)
         for i in range(0, len(texts), self.batch_size):
-            chunks.append(self._run(session, texts[i:i + self.batch_size]))
+            if run_lock is None:
+                chunks.append(self._run(session, texts[i:i + self.batch_size]))
+            else:
+                with run_lock:
+                    chunks.append(self._run(session, texts[i:i + self.batch_size]))
         emb = np.concatenate(chunks, axis=0)
         return l2_normalize(emb) if self.normalize else emb
 

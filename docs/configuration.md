@@ -39,7 +39,7 @@ extra_extensions: []                    # additional extensions treated as text
 embedding:
   provider: onnx                        # onnx | sentence-transformers | hashing
   model: BAAI/bge-small-en-v1.5         # HF repo id with onnx/model.onnx, or a local directory
-  revision: null                        # pin a HF revision
+  revision: 5c38ec7c405ec4b44b94cc5a9bb96e735b38267a   # pinned commit of the default model (null = whatever `main` is today)
   device: cpu                           # steady-state document embedding: cpu | cuda[:n] | dml[:n] | auto | <name in devices>
   bulk_device: same                     # used during full builds / deep queues (see "Devices")
   query_device: same                    # query embedding (latency matters)
@@ -59,8 +59,8 @@ embedding:
   threads: 0                            # onnxruntime intra-op threads, 0 = default
   on_model_change: reembed              # reembed | refuse
 
-chunking:
-  target_chars: 1400
+chunking:                               # changing any of these re-extracts every document at the next start
+  target_chars: 1400                    # (the stored chunks no longer match what this configuration would produce)
   max_chars: 2200
   overlap_chars: 180
   min_chars: 40
@@ -72,6 +72,8 @@ api:
   allow_non_loopback: false
   allowed_hosts: []                     # extra Host header values; loopback names are always allowed
   log_requests: false
+  backup_dir: null                      # where POST /backup may write (default <data_dir>/backups); nowhere else
+  read_token: false                     # true on a SHARED machine: search/document/status/stats/errors need the admin token too
 
 indexing:
   use_windows_search: true              # inventory + GatherTime deltas + FREETEXT when the root is indexed
@@ -80,7 +82,9 @@ indexing:
   auto_start: true                      # run a full build on first start if none was done
   max_file_bytes: 52428800              # 50 MB
   max_text_chars: 2000000
-  follow_reparse_points: false
+  max_expanded_bytes: 536870912         # an Office container whose members would expand past this (512 MB) is not parsed
+  extractor_memory_mb: 2048             # commit limit of the extractor child process (Windows job object); 0 = unlimited
+  follow_reparse_points: false          # a root that is itself a junction/symlink is not walked unless this is true
   max_attempts: 3                       # per job before it is marked failed
   extract_timeout_s: 120                # per file, document formats (child process)
   watch_filesystem: true                # ReadDirectoryChangesW watcher per root
@@ -89,7 +93,8 @@ indexing:
   reconcile_min_fraction: 0.5           # skip tombstoning when an enumeration returns fewer than this share of known files
   startup_reconcile_delay_s: 600        # first full reconcile this long after start
   low_priority: true                    # below-normal process priority
-  secret_scan_allow: []                 # path globs exempt from secret screening (e.g. "**/docs/examples/**")
+  secret_scan_allow: []                 # path globs exempt from secret screening (e.g. "**/docs/examples/**"); any change
+                                        # to this list or to skip_suspected_secrets re-screens stored text at the next start
   ocr_scanned_pdfs: false               # OCR image-only PDFs with the Windows OCR engine (needs `uv sync --extra ocr`)
   ocr_max_pages: 50
   bulk_yield_gpu_percent: 40            # stay off the bulk GPU while other processes keep it above this utilization

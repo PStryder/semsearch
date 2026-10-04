@@ -15,15 +15,29 @@ from ..models import ExtractResult
 log = logging.getLogger(__name__)
 
 
+_available: bool | None = None
+
+
 def available() -> bool:
+    """The projection packages import AND an OCR engine activates for an installed language.
+    (Measured 2026-10-04: Windows.Media.Ocr activates from an unpackaged CPython process, both
+    on the desktop and in Session 0 under the NT SERVICE virtual account; no package identity
+    is needed on Windows 11 build 26200.)"""
+    global _available
+    if _available is not None:
+        return _available
     try:
         import winrt.windows.data.pdf  # noqa: F401
-        import winrt.windows.media.ocr  # noqa: F401
         import winrt.windows.graphics.imaging  # noqa: F401
         import winrt.windows.storage.streams  # noqa: F401
-        return True
-    except Exception:  # noqa: BLE001
-        return False
+        from winrt.windows.media.ocr import OcrEngine
+        _available = OcrEngine.try_create_from_user_profile_languages() is not None
+        if not _available:
+            log.warning("Windows OCR: no OCR language pack is installed for this account; scanned PDFs will not be read")
+    except Exception as e:  # noqa: BLE001
+        log.info("Windows OCR unavailable: %s", e)
+        _available = False
+    return _available
 
 
 async def _ocr_pdf(path: str, max_pages: int) -> tuple[str, int, int]:

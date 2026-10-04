@@ -18,6 +18,7 @@ The job queue lives in SQLite so a restart resumes where it stopped.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import re
@@ -34,8 +35,8 @@ from .config import Config
 from .embed.base import EmbeddingProvider
 from .extract.registry import ExtractorRegistry
 from .models import FileEntry
-from .security import (PathRejected, check_indexable, display_path, file_extension, is_excluded, is_within, normalize_path,
-                       root_for, suspected_secret, true_case_path)
+from .security import (PathRejected, check_indexable, display_path, file_extension, is_excluded, is_within, lstat_info,
+                       normalize_path, reparse_roots, root_for, suspected_secret, true_case_path)
 from .store.db import Store, file_hash, text_hash
 
 log = logging.getLogger(__name__)
@@ -67,6 +68,8 @@ def apply_title(chunks, title: str) -> None:
     for ch in chunks:
         ch.embed_text = f"{title}\n\n{ch.text}" if title else ch.text
 
+
+PREPROCESS_VERSION = 1  # bump when chunk_text / derive_title change what gets stored for the same bytes
 
 PRIO_USER = 1
 PRIO_WATCH = 2
@@ -142,6 +145,11 @@ class Indexer:
         n = self.store.requeue_running()
         if n:
             log.info("requeued %d jobs left running by a previous process", n)
+        if not self.cfg.indexing.follow_reparse_points:
+            for r in reparse_roots([display_path(r) for r in self.cfg.roots]):
+                log.warning("root %s is a junction/symlink: nothing under it will be indexed. Configure its target "
+                            "directory as the root, or set indexing.follow_reparse_points: true", r)
+        self._check_preprocess_version()
         # scope enforcement and the secret-policy rescan can take a minute on a large index
         # (removing a thousand documents is a thousand transactions); they run on the scheduler
         # thread so service readiness is not held up
@@ -162,15 +170,20 @@ class Indexer:
             except Exception as e:
                 log.warning("filesystem watcher not started: %s", e)
 
-    def stop(self, timeout: float = 30.0) -> None:
+    def stop(self, timeout: float = 30.0) -> bool:
         """Stop within `timeout` seconds end to end. A job in progress gets a share of the budget;
         if it is still stuck (typically a native extractor on a bad file) the extractor child is
-        killed, which fails that job so it is retried at the next start."""
+        killed, which fails that job so it is retried at the next start. Returns True when every
+        thread actually exited; False means the host must not wait on them (and should not
+        close resources they may still be using)."""
         deadline = time.time() + timeout
         self._stop.set()
         self._wake.set()
+        clean = True
         if self._watcher:
-            self._watcher.stop()
+            if not self._watcher.stop(timeout_s=min(3.0, max(0.5, timeout * 0.1))):
+                log.warning("watcher threads did not exit in time")
+                clean = False
         if self._worker and self._worker.is_alive():
             self._worker.join(max(0.5, timeout * 0.5))
             if self._worker.is_alive():
@@ -181,9 +194,13 @@ class Indexer:
                 self._worker.join(max(0.5, deadline - time.time()))
                 if self._worker.is_alive():
                     log.error("indexer worker did not stop within %.0fs; the running job will be requeued at next start", timeout)
+                    clean = False
         if self._scheduler and self._scheduler.is_alive():
             self._scheduler.join(max(0.5, deadline - time.time()))
+            if self._scheduler.is_alive():
+                clean = False
         self.state.running = False
+        return clean
 
     def pause(self) -> None:
         self.state.paused = True
@@ -253,7 +270,13 @@ class Indexer:
         if is_excluded(fe.path, self.cfg.excludes):
             return False
         if fe.size is not None and fe.size > self.cfg.indexing.max_file_bytes:
-            return False
+            # inventory metadata can be stale (a catalog entry from before the file shrank):
+            # only the live size decides, and only on this rare path is a stat spent here
+            try:
+                if os.stat(fe.path).st_size > self.cfg.indexing.max_file_bytes:
+                    return False
+            except OSError:
+                return False
         return True
 
     def _enumerate(self, directory: str, root: str | None = None):
@@ -669,26 +692,40 @@ class Indexer:
             self.state.docs_removed += removed_root + removed_policy
         return {"outside_roots": removed_root, "policy": removed_policy}
 
+    def secret_policy_id(self) -> str:
+        """Identity of the whole screening policy: on/off plus the exemption list. Any change
+        (including dropping an exemption) must re-screen what the old policy let through."""
+        if not self.cfg.indexing.skip_suspected_secrets:
+            return "off"
+        allow = sorted(self.cfg.indexing.secret_scan_allow)
+        return "on:" + hashlib.blake2b("\n".join(allow).encode("utf-8"), digest_size=8).hexdigest()
+
     def enforce_secret_policy(self) -> int:
-        """When secret screening is (re)enabled, already-indexed, unchanged documents must be
-        screened too: scan stored chunk text and quarantine hits. Runs once per policy change
-        (tracked in meta 'policy:secret_scan'); returns the number of documents quarantined."""
-        want = "on" if self.cfg.indexing.skip_suspected_secrets else "off"
+        """Bring already-indexed, unchanged documents in line with the screening policy after
+        it changed (tracked in meta 'policy:secret_scan'). Screening on, or a different exemption
+        list: rescan stored text of every non-exempt document and quarantine hits; quarantined
+        documents that are now exempt go back to the queue. Screening off: re-queue everything
+        quarantined. Returns the number of documents acted on."""
+        want = self.secret_policy_id()
         have = self.store.get_meta("policy:secret_scan")
         if have == want:
             return 0
         n = 0
-        if want == "on":
-            log.info("secret screening enabled: scanning stored text of indexed documents")
+        if want != "off":
+            log.info("secret screening policy changed: rescanning stored text of indexed documents")
+            allow = self.cfg.indexing.secret_scan_allow
             for doc_id, disp, text in self.store.iter_documents_with_text():
-                if is_excluded(disp, self.cfg.indexing.secret_scan_allow):
+                if is_excluded(disp, allow):
                     continue
                 hit = suspected_secret(text)
                 if hit:
                     self.store.quarantine_document(doc_id, "secret_suspected", f"credential pattern: {hit}")
                     self.store.record_error(disp, "policy", f"credential pattern: {hit} (found by policy rescan)")
                     n += 1
-            log.info("secret screening rescan: %d documents quarantined", n)
+            # quarantined documents the new exemption list covers are indexable again
+            rows = self.store._r().execute("SELECT path, display_path FROM documents WHERE extract_status='secret_suspected'").fetchall()
+            n += self.store.enqueue_many((r[0], "index", PRIO_REEMBED) for r in rows if is_excluded(r[1], allow))
+            log.info("secret screening rescan: %d documents quarantined or re-queued", n)
         else:
             # screening turned off: previously quarantined documents are re-indexed on their next change;
             # force it now so the index matches the policy
@@ -701,13 +738,37 @@ class Indexer:
     def _stat_unchanged(self, row, size: int, mtime: float) -> bool:
         """Same size and mtime as the stored row, and nothing left to do for it: an 'ok' document
         must carry current-model vectors; non-text outcomes (empty/binary/unsupported/too_large)
-        are final until the bytes change."""
+        are final until the bytes change; a quarantined document is final only while the policy
+        that quarantined it still applies to it."""
         if row["size"] != size or row["mtime"] is None or abs(row["mtime"] - mtime) >= 1e-6:
             return False
         st = row["extract_status"]
         if st == "ok":
             return row["embedding_fingerprint"] == self.fingerprint and row["n_chunks"] > 0
-        return st in ("empty", "binary", "unsupported", "too_large", "secret_suspected")
+        if st == "secret_suspected":
+            return self.cfg.indexing.skip_suspected_secrets and not is_excluded(row["display_path"], self.cfg.indexing.secret_scan_allow)
+        return st in ("empty", "binary", "unsupported", "too_large")
+
+    # ---------- preprocessing identity ----------
+    def preprocess_id(self) -> str:
+        """Everything besides the embedding model that determines stored chunks: the chunking
+        parameters and the chunker/title algorithm version. A change re-extracts every document
+        (the bytes have not changed, so the normal ladder would call them unchanged)."""
+        c = self.cfg.chunking
+        s = f"v{PREPROCESS_VERSION}:{c.target_chars}:{c.max_chars}:{c.overlap_chars}:{c.min_chars}:{c.max_chunks_per_doc}"
+        return s
+
+    def _check_preprocess_version(self) -> int:
+        want = self.preprocess_id()
+        have = self.store.get_meta("policy:preprocess")
+        if have == want:
+            return 0
+        n = 0
+        if have is not None:
+            log.warning("chunking/preprocessing changed (%s -> %s): every document will be re-extracted", have, want)
+            n = self.store.invalidate_content()
+        self.store.set_meta("policy:preprocess", want)
+        return n
 
     def _index_file(self, path_norm: str) -> str:
         disp = true_case_path(path_norm)
@@ -768,10 +829,13 @@ class Indexer:
                     new_ext = file_extension(disp)
                     fields = dict(path=path_norm, display_path=disp, filename=os.path.basename(disp), extension=new_ext,
                                   root=root_for(disp, self.roots), size=info.size, mtime=info.mtime, ctime=info.ctime, last_seen=now)
-                    # a filename-derived title follows the file; a heading-derived one does not change
-                    retitle = bool(row["title"]) and row["title"] == derive_title("", row["display_path"]) and derive_title("", disp) != row["title"]
+                    # the title is derived from the text head and the file name; recompute it from the
+                    # stored first chunk (same bytes, so same text) and the new name, and refresh the
+                    # vectors when it changed, since the title header is part of what was embedded
+                    new_title = derive_title(self._stored_head_text(int(row["id"])), disp)
+                    retitle = new_title != (row["title"] or "")
                     if retitle:
-                        fields["title"] = derive_title("", disp)
+                        fields["title"] = new_title
                     self.store.restore_document(int(row["id"]), **fields)
                     self.state.docs_moved += 1
                     if retitle:
@@ -789,6 +853,22 @@ class Indexer:
             if existing is not None:
                 self.store.tombstone_document(int(existing["id"]))
             return "missing"
+        # the stat, the hash and the extractor each opened the path separately; if the file was
+        # swapped meanwhile (another file, a reparse point, a new version) nothing from this pass
+        # may be recorded under the identity captured at the start. Re-queue and let the next pass
+        # see a consistent file.
+        try:
+            after = lstat_info(disp)
+        except FileNotFoundError:
+            if existing is not None:
+                self.store.tombstone_document(int(existing["id"]))
+            return "missing"
+        except OSError:
+            after = None
+        if after is None or after.is_reparse or (str(after.file_id), after.size) != (str(info.file_id), info.size) or abs(after.mtime - info.mtime) >= 1e-6:
+            log.info("file changed while it was being indexed, re-queued: %s", disp)
+            self.store.enqueue(path_norm, "index", PRIO_USER)
+            return "changed_during_index"
         if res.ok and self.cfg.indexing.skip_suspected_secrets and not is_excluded(disp, self.cfg.indexing.secret_scan_allow):
             hit = suspected_secret(res.text)
             if hit:
@@ -853,6 +933,14 @@ class Indexer:
                 vectors[i] = emb[uniq[hashes[i]]]
         return vectors, len(todo_idx), len(chunks) - len(todo_idx), (time.perf_counter() - t0) * 1000
 
+    def _stored_head_text(self, doc_id: int) -> str:
+        """The document's leading text as stored (first chunk, which starts at offset 0), for
+        re-deriving the title without re-reading the file."""
+        rows = self.store.chunks_for_doc(doc_id)
+        if rows and int(rows[0]["start"]) == 0:
+            return rows[0]["text"]
+        return ""
+
     def _reembed(self, path_norm: str) -> str:
         row = self.store.get_document(path_norm)
         if row is None:
@@ -865,7 +953,10 @@ class Indexer:
         apply_title(chunks, row["title"] or derive_title("", row["display_path"]))
         vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks)
         self.state.embed_ms += embed_ms
-        self.store.set_vectors([int(c["id"]) for c in chunks_rows], vectors, int(row["id"]), self.fingerprint)
+        # the stored text_hash is the vector-reuse key (title header + text): it must describe
+        # what these vectors now represent, or a later document could reuse the wrong embedding
+        self.store.set_vectors([int(c["id"]) for c in chunks_rows], vectors, int(row["id"]), self.fingerprint,
+                               text_hashes=[text_hash(c.for_embedding) for c in chunks])
         self.state.chunks_embedded += n_new
         self.state.chunks_reused += n_reused
         self.state.recent.append((time.time(), 1, len(chunks)))

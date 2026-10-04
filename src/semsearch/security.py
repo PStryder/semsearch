@@ -12,6 +12,7 @@ import fnmatch
 import os
 import re
 import stat
+import time
 from dataclasses import dataclass
 
 FILE_ATTRIBUTE_REPARSE_POINT = 0x0400
@@ -173,34 +174,62 @@ def lstat_info(path: str) -> StatInfo:
     )
 
 
-_reparse_dir_cache: dict[str, bool] = {}
+_reparse_dir_cache: dict[str, tuple[bool, float]] = {}
+REPARSE_CACHE_TTL_S = 120.0  # a directory can be replaced by a junction after it was checked
+
+
+def reset_reparse_cache() -> None:
+    _reparse_dir_cache.clear()
+
+
+def is_reparse_dir(path: str) -> bool:
+    """Cached (time-bounded) lstat: is this directory a reparse point?"""
+    now = time.time()
+    ent = _reparse_dir_cache.get(path)
+    if ent is not None and now - ent[1] < REPARSE_CACHE_TTL_S:
+        return ent[0]
+    try:
+        attrs = getattr(os.lstat(path), "st_file_attributes", 0)
+        hit = bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
+    except OSError:
+        hit = False
+    if len(_reparse_dir_cache) > 50000:
+        _reparse_dir_cache.clear()
+    _reparse_dir_cache[path] = (hit, now)
+    return hit
 
 
 def has_reparse_ancestor(path: str, roots: list[str]) -> bool:
-    """True if any directory between the containing root and the file is a reparse point
-    (junction, symlinked directory, mount point). Results are cached per directory."""
+    """True if the containing root or any directory between it and the file is a reparse
+    point (junction, symlinked directory, mount point). The root itself counts: a root that
+    is a junction would otherwise let everything under its target in under the root's name."""
     root = root_for(path, roots)
     if root is None:
         return True
     n = normalize_path(path)
     rel = n[len(root):].strip("\\")
-    parts = rel.split("\\")[:-1]
+    parts = rel.split("\\")[:-1] if rel else []
+    if is_reparse_dir(root):
+        return True
     cur = root
     for part in parts:
         cur = cur + "\\" + part
-        hit = _reparse_dir_cache.get(cur)
-        if hit is None:
-            try:
-                attrs = getattr(os.lstat(cur), "st_file_attributes", 0)
-                hit = bool(attrs & FILE_ATTRIBUTE_REPARSE_POINT)
-            except OSError:
-                hit = False
-            if len(_reparse_dir_cache) > 50000:
-                _reparse_dir_cache.clear()
-            _reparse_dir_cache[cur] = hit
-        if hit:
+        if is_reparse_dir(cur):
             return True
     return False
+
+
+def reparse_roots(roots: list[str]) -> list[str]:
+    """Configured roots that are themselves reparse points (to warn about at startup)."""
+    out = []
+    for r in roots:
+        try:
+            attrs = getattr(os.lstat(r), "st_file_attributes", 0)
+        except OSError:
+            continue
+        if attrs & FILE_ATTRIBUTE_REPARSE_POINT:
+            out.append(r)
+    return out
 
 
 def check_indexable(path: str, roots: list[str], follow_reparse: bool = False) -> StatInfo:
@@ -217,7 +246,9 @@ def check_indexable(path: str, roots: list[str], follow_reparse: bool = False) -
         raise PathRejected("reparse point (symlink/junction) not followed")
     if not follow_reparse and has_reparse_ancestor(path, roots):
         raise PathRejected("path passes through a reparse point (junction/symlinked directory)")
-    if info.is_reparse and follow_reparse:
+    if follow_reparse:
+        # following is allowed, but only to targets that are themselves inside a root: this
+        # covers a symlinked file and a junction anywhere in the ancestor chain alike
         real = os.path.realpath(path)
         if not is_within(real, roots):
             raise PathRejected(f"reparse target outside roots: {real}")
@@ -231,6 +262,8 @@ def check_indexable(path: str, roots: list[str], follow_reparse: bool = False) -
 def walk_safe(root: str, roots: list[str], excludes: list[str], follow_reparse: bool = False):
     """os.scandir-based walk that never descends into reparse points (unless allowed) and
     never leaves the configured roots. Yields (path, os.DirEntry)."""
+    if not follow_reparse and is_reparse_dir(normalize_path(root)):
+        return  # a junction root is not walked: its contents live outside the configured boundary
     stack = [root]
     seen_dirs: set[tuple[int, int]] = set()
     while stack:

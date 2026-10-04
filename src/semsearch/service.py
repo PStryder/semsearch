@@ -41,6 +41,7 @@ class ServiceRuntime:
         self.server = None
         self.server_thread: threading.Thread | None = None
         self.admin_token: str | None = None
+        self.stopped_clean = True
 
     # ---- startup ----
     def start(self) -> None:
@@ -56,7 +57,7 @@ class ServiceRuntime:
         os.makedirs(cfg.index_path, exist_ok=True)
         os.makedirs(cfg.state_path, exist_ok=True)
         os.makedirs(cfg.model_cache_dir, exist_ok=True)
-        os.environ.setdefault("HF_HOME", str(cfg.model_cache_dir))
+        os.environ["HF_HOME"] = str(cfg.model_cache_dir)
         os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
         log.info("semsearch %s starting; config=%s index=%s state=%s logs=%s", __version__, cfg.source_path, cfg.index_path, cfg.state_path, cfg.log_dir)
         log.info("roots: %s", [str(r) for r in cfg.roots])
@@ -118,27 +119,41 @@ class ServiceRuntime:
         raise RuntimeError(f"API did not report healthy: {last}")
 
     # ---- shutdown ----
-    def stop(self, timeout_s: float | None = None) -> None:
+    def stop(self, timeout_s: float | None = None) -> bool:
+        """Bounded shutdown. Returns True when every thread exited and resources were closed;
+        False when something is stuck past the budget, in which case the shared store and
+        extractor were deliberately NOT closed under the surviving threads and the host should
+        end the process (the WAL and the job queue make that safe: nothing is lost)."""
         timeout_s = timeout_s if timeout_s is not None else self.cfg.service.shutdown_timeout_s
         t0 = time.time()
         deadline = t0 + timeout_s
         log.info("service stopping (budget %.0fs)", timeout_s)
+        clean = True
         if self.state is not None:
             try:
                 # end-to-end deadline: the indexer gets 70% of the budget including a stuck extractor
-                self.state.indexer.stop(timeout=max(3.0, (deadline - time.time()) * 0.7))
+                clean = self.state.indexer.stop(timeout=max(3.0, (deadline - time.time()) * 0.7))
             except Exception as e:  # noqa: BLE001
                 log.warning("indexer stop: %s", e)
+                clean = False
         if self.server is not None:
             self.server.should_exit = True
             if self.server_thread is not None:
                 self.server_thread.join(max(1.0, deadline - time.time()))
+                if self.server_thread.is_alive():
+                    log.warning("API thread did not exit within the budget")
+                    clean = False
         if self.state is not None:
-            try:
-                self.state.close_without_indexer()
-            except Exception as e:  # noqa: BLE001
-                log.warning("close: %s", e)
-        log.info("service stopped in %.1fs", time.time() - t0)
+            if clean:
+                try:
+                    self.state.close_without_indexer()
+                except Exception as e:  # noqa: BLE001
+                    log.warning("close: %s", e)
+            else:
+                log.warning("threads still running at the deadline: leaving the store open for the process exit (WAL is consistent)")
+        self.stopped_clean = clean
+        log.info("service stopped in %.1fs (%s)", time.time() - t0, "clean" if clean else "forced")
+        return clean
 
 
 class _NullStream(io.TextIOBase):
@@ -306,9 +321,14 @@ def _make_service_class():
                 self.ReportServiceStatus(win32service.SERVICE_RUNNING)
                 servicemanager.LogInfoMsg(f"semsearch {__version__} running on http://{cfg.api.host}:{cfg.api.port}")
                 win32event.WaitForSingleObject(self.stop_event, win32event.INFINITE)
-                self.runtime.stop()
-                servicemanager.LogInfoMsg("semsearch stopped")
+                clean = self.runtime.stop()
+                servicemanager.LogInfoMsg("semsearch stopped" if clean else "semsearch stopped (forced: a thread overran the shutdown budget)")
                 self.ReportServiceStatus(win32service.SERVICE_STOPPED)
+                if not clean:
+                    # a thread stuck in native code (inference, COM, a filter) would otherwise keep
+                    # the process alive after the SCM was told we stopped; end it here, bounded
+                    logging.shutdown()
+                    os._exit(0)
             except ConfigError as e:
                 servicemanager.LogErrorMsg(f"semsearch configuration error: {e}")
                 log.error("configuration error: %s", e)

@@ -76,10 +76,12 @@ Deleting `<data_dir>\semsearch.db` (with the server stopped) is equivalent to `-
 ## Backup and housekeeping
 
 ```
-semsearch backup D:\backups\semsearch-2026-10-02.db      # consistent online copy via the running service
-semsearch backup D:\backups\semsearch.db --direct        # copy straight from the database file (service may be stopped)
+semsearch backup semsearch-2026-10-02.db                 # consistent online copy via the running service -> <data_dir>\backups\
+semsearch backup D:\backups\semsearch.db --direct        # copy straight from the database file, anywhere you can write (service may be stopped)
 ```
 
+The service writes only under its own backup directory (`<data_dir>\backups`, or
+`api.backup_dir`); the admin token is authority over the index, not over the filesystem.
 Both use SQLite's backup API, so the copy is consistent even while the indexer writes. Restore
 by stopping the service, replacing `<index_dir>\semsearch.db` (and deleting any `-wal`/`-shm`),
 and starting it; the next incremental pass picks up anything that changed since the copy.

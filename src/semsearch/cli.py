@@ -111,14 +111,14 @@ def _print_status(s: dict) -> None:
         rs = ws.get("relevance_signal") or {}
         if rs and not rs.get("active", True):
             print("  Windows relevance signal paused (no usable hits recently)")
+    else:
+        print("Windows Search: unavailable", ws.get("error", ""))
     if ix.get("failed_jobs"):
         print("Failed jobs (retry with: semsearch retry-failed):")
         for j in ix["failed_jobs"][:10]:
             print(f"  {j['op']:<7} {j['path']}  attempts={j['attempts']}  {(j.get('error') or '')[:120]}")
     if ix.get("gpu_yielding"):
         print("GPU courtesy: bulk GPU is busy with other processes; embedding on the steady-state device")
-    else:
-        print("Windows Search: unavailable", ws.get("error", ""))
     st = s["store"]
     print(f"Store: {st['path']}  schema v{st.get('schema_version')}  dim {st.get('dim')}" + ("  RECOVERED FROM CORRUPTION" if st.get("recovered_from_corruption") else ""))
     print("Config:", s.get("config_source"))
@@ -297,7 +297,7 @@ def dispatch(argv: list[str]) -> int:
                 print(f"       selector: {json.dumps(selector_for(ad))}")
         return 0
 
-    token = _admin_token(cfg) if a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") else None
+    token = _admin_token(cfg) if (a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") or cfg.api.read_token) else None
     try:
         with _client(base, token) as c:
             if a.cmd == "health":
@@ -344,7 +344,13 @@ def dispatch(argv: list[str]) -> int:
                 if tok is None:
                     print("backup via the service needs the admin token; or use --direct", file=sys.stderr)
                     return 3
-                r = c.post("/backup", json={"path": dest}, headers={"x-semsearch-token": tok})
+                # the service only writes under its backup directory; a bare file name lands there,
+                # anything else must be --direct (which runs with the caller's own file rights)
+                api_dest = a.dest if not os.path.isabs(a.dest) and os.sep not in a.dest and "/" not in a.dest else dest
+                r = c.post("/backup", json={"path": api_dest}, headers={"x-semsearch-token": tok})
+                if r.status_code == 403:
+                    print(f"{r.json().get('detail')}\nUse a bare file name (written under the service's backup directory) or --direct for another location", file=sys.stderr)
+                    return 1
                 print(json.dumps(r.json()))
                 return 0 if r.status_code < 400 else 1
             if a.cmd == "query":
@@ -534,7 +540,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # ---- HTTP client mode ----
     needs_token = a.reindex is not None or a.remove or a.pause or a.resume or a.retry_failed
-    token = _admin_token(cfg) if needs_token else None
+    token = _admin_token(cfg) if (needs_token or cfg.api.read_token) else None
     try:
         with _client(base, token) as c:
             if a.health:

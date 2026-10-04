@@ -37,7 +37,7 @@ event log:
 |---|---|
 | Start type | Automatic (Delayed Start): the index is not needed in the first seconds after boot and Windows Search itself starts delayed |
 | Readiness | SCM sees `START_PENDING` (with wait hints) while the store opens, the model loads and the API binds; `RUNNING` is reported only after `GET /health` on the loopback port returns `ok` |
-| Stop / shutdown / pre-shutdown | All three set one stop event; the runtime stops the indexer (job in progress finishes or is requeued), drains the API, checkpoints and closes the database within `service.shutdown_timeout_s` (30 s default). The budget is an end-to-end deadline: if the job in progress is stuck inside a native extractor, the extractor child process is killed at the halfway mark and the job is retried at the next start |
+| Stop / shutdown / pre-shutdown | All three set one stop event; the runtime stops the watcher (pending directory reads are cancelled and the threads joined), the indexer (job in progress finishes or is requeued), drains the API, checkpoints and closes the database within `service.shutdown_timeout_s` (30 s default). The budget is an end-to-end deadline: if the job in progress is stuck inside a native extractor, the extractor child is killed at the halfway mark and the job is retried at the next start. If any thread is still alive at the deadline (inference or COM stuck in native code), the store is left open rather than closed under it, `STOPPED` is reported, and the process ends itself; the WAL and the job queue make that safe |
 | Configuration discovery | The installer bakes `--config <path>` into the service command line and sets `SEMSEARCH_CONFIG` machine-wide, so a custom `-DataDir` is honoured by both the service and the operator CLI |
 | Crash recovery | `sc failure`: restart after 5 s, 30 s, 120 s; failure counter resets after a day. Jobs left `running` by a crash are requeued at the next start; an interrupted document write is invisible because document, chunks and vectors commit in one transaction |
 | Single instance | A global named mutex (`Global\SemSearch.Service`); a second instance logs to the event log and exits with `ERROR_SERVICE_ALREADY_RUNNING` |
@@ -137,12 +137,14 @@ locations you do not want to grant explicitly.
 | Location | Contents | Written by |
 |---|---|---|
 | `%ProgramFiles%\SemSearch\python\` | relocatable CPython (python-build-standalone) with semsearch and every dependency (`onnxruntime-directml`, `sqlite-vec`, pywin32, parsers) installed into its own `site-packages`; the service binary is its `pythonw.exe` | installer only |
-| `%ProgramFiles%\SemSearch\semsearch.exe`, `semsearch.cmd` | operator CLI (install dir is on the machine PATH); the `.exe` is pip's console launcher and works from cmd, PowerShell and Git Bash, re-executing the runtime with `-s` | installer only |
+| `%ProgramFiles%\SemSearch\semsearch.exe`, `semsearch.cmd` | operator CLI (install dir is on the machine PATH); the `.exe` is a pip-style console launcher **regenerated at install time** for the installed interpreter path (a launcher carries that path inside it, so one built in the release directory would point at the build tree); works from cmd, PowerShell and Git Bash, re-executing the runtime with `-s` | installer only |
+| `%ProgramFiles%\SemSearch\THIRD-PARTY-NOTICES.txt`, `sbom.json`, `model-manifest.json`, `requirements.lock.txt`, `release-manifest.json`, `install-manifest.json` | licence notices of every bundled component, CycloneDX inventory, the bundled model's commit/hashes/licence, the exact dependency set, SHA-256 of every shipped file, and what the installer changed on this machine (read by the uninstaller) | installer only |
 | `%ProgramData%\SemSearch\semsearch.yaml` | configuration; written once, never overwritten by upgrades | installer (first time), operator |
 | `%ProgramData%\SemSearch\index\` | `semsearch.db` + WAL (documents, chunks, FTS5, vectors, job queue) | service |
 | `%ProgramData%\SemSearch\state\` | `admin.token` (gates maintenance API calls), `devices.json` (last accelerator resolution) | service |
 | `%ProgramData%\SemSearch\logs\` | `semsearch.log` rotating 10 MB x 5 | service |
-| `%ProgramData%\SemSearch\models\` | Hugging Face cache for the embedding model (machine-wide, no user profile involved) | installer / service |
+| `%ProgramData%\SemSearch\models\` | the embedding model: `bundled\<owner--name>\<commit>\` copied from the release (plain files, no network), or a Hugging Face cache when it had to be downloaded | installer / service |
+| `%ProgramData%\SemSearch\backups\` | the only place `POST /backup` / `semsearch backup <name>` may write | service |
 
 Nothing is per-user. The one thing that *would* have been per-user, the Hugging Face model
 cache under `%USERPROFILE%\.cache`, is redirected to `models\` via `HF_HOME` so the service
@@ -151,8 +153,11 @@ never needs a loaded user profile. Upgrades replace only `%ProgramFiles%\SemSear
 ACLs set by the installer: `%ProgramData%\SemSearch` is readable only by SYSTEM,
 Administrators, the service account (full control) and the operator account (read; write on
 `semsearch.yaml`). Extracted text lives in the index, so ordinary local users cannot read it
-from disk; they also cannot query it, because the admin token file is unreadable to them and
-the search API is loopback-only (see below).
+from disk. They **can** query it through the loopback API unless `api.read_token: true` is set:
+the API does not impersonate callers, so what the service account may read, any local process
+may search. On a single-user workstation that is the design; on a shared machine turn
+`read_token` on (the token file is readable by the operator only) or run one instance per
+user. See "Security posture" in docs/architecture.md for the full statement of the boundary.
 
 ## Accelerator resolution
 
@@ -213,13 +218,22 @@ every object in the tree, which took several minutes on `F:\HexyLab` (hundreds o
 of files once virtual environments and `node_modules` are counted). The installer grants the
 entry on the root only (no `/T`), so the propagation is the kernel's, not a per-file rewrite.
 
-The installer: checks elevation, Windows build and the WSearch service; copies the runtime to
-`%ProgramFiles%\SemSearch` (keeping the previous one as `SemSearch.previous` until success);
-creates the data directories; writes `semsearch.yaml` if absent, with device selectors for
-the adapters it finds; pre-fetches the embedding model into the machine cache; registers the
-service (delayed auto start, failure actions); applies ACLs, including read access for the
-service account on each root and start/stop rights for the operator; starts the service;
-waits for `/health`; runs a status and a smoke query. Re-running is an upgrade (see below).
+The installer: checks elevation, Windows build and the WSearch service, and refuses unsafe
+locations (relative paths, drive roots, `InstallDir`/`DataDir` nested in each other or in the
+release directory); verifies the release against its manifest and native-dependency check
+*before* touching the machine; stops the service (disabling recovery first, terminating only
+the registered service process if it lingers); copies the runtime to `%ProgramFiles%\SemSearch`
+(keeping the previous one as `SemSearch.previous`), verifies the copy against the manifest,
+regenerates the console launchers for the installed path; creates the data directories; writes
+`semsearch.yaml` if absent, with device selectors for the adapters it finds; copies the bundled
+model into the machine cache (downloading only if the release carried none); registers the
+service (delayed auto start, failure actions); applies ACLs (exit codes checked), including
+read access for the service account on each root and start/stop rights for the operator;
+writes `install-manifest.json`; starts the service; waits for `/health`; runs a status and a
+smoke query. **Any failure between stopping the service and the end of the binary swap rolls
+back**: the new directory is removed, `SemSearch.previous` is renamed back, the start type and
+failure actions are restored and the previous version is started again. Re-running is an
+upgrade (see below).
 
 Then: edit `%ProgramData%\SemSearch\semsearch.yaml` if you want to change roots or policy,
 and `semsearch service restart`.
@@ -262,6 +276,19 @@ Not demonstrated in this session: a full Windows reboot. The service is register
 `AUTO_START` with delayed start and failure recovery, and a cold start was exercised through
 `sc start` by the installer, but the reboot itself was left to the operator.
 
+Windows OCR from a service (measured 2026-10-04): a review raised that `Windows.Media.Ocr` is
+documented for packaged desktop apps and might need package identity. Measured instead: an
+image-only PDF rendered with `Windows.Data.Pdf` and recognized with `Windows.Media.Ocr`
+extracted correctly (a) from an unpackaged CPython on the desktop (0.24 s) and (b) through the
+live service, in Session 0 under `NT SERVICE\SemSearch`, inside the extractor child
+(`extract_method: windows-ocr`, text searchable). No package identity is needed on Windows 11
+build 26200; `available()` now also checks that an OCR engine activates for an installed
+language pack rather than only that the projection imports.
+
+Not covered by any measurement here: a clean machine without a development toolchain, another
+Windows build, or a machine without a DirectX 12 adapter (the CPU fallback is exercised by the
+unit tests, not by an install).
+
 ## Day-to-day commands
 
 ```
@@ -290,23 +317,39 @@ installer grants to the operator, so no elevation is needed.
    service drop its vectors at first start and re-embed every document from stored chunk text
    in the background; search works meanwhile and no file is re-read.
 2. From an elevated prompt in the new release directory: `.\install.ps1`.
-   It stops the service, moves the old install to `SemSearch.previous`, copies the new runtime,
-   keeps `%ProgramData%\SemSearch` untouched, re-registers the service, starts it and verifies
-   health. Schema migrations are additive and run at first open (`meta.schema_version`); the
-   log shows `migrating index schema vN -> vM`.
+   It verifies the release, stops the service, moves the old install to `SemSearch.previous`,
+   copies and verifies the new runtime, keeps `%ProgramData%\SemSearch` untouched,
+   re-registers the service, starts it and verifies health. A failure during the swap rolls
+   back automatically to the previous version (see Installation). Schema migrations are
+   additive and run at first open (`meta.schema_version`); the log shows
+   `migrating index schema vN -> vM`. A chunking change re-extracts every document; a model
+   change re-embeds from stored text; neither needs attention.
 3. Verify: `semsearch status` shows the new version.
 
-Rollback if the new build fails to start: stop the service, delete `%ProgramFiles%\SemSearch`,
-rename `SemSearch.previous` back, `semsearch service start`. An index written by a newer schema
-is refused by an older build with a clear message rather than modified; restore the index from
-backup in that case (or rebuild).
+Manual rollback if the new build starts but misbehaves: stop the service, delete
+`%ProgramFiles%\SemSearch`, rename `SemSearch.previous` back, `semsearch service start`. An
+index written by a newer schema is refused by an older build with a clear message rather than
+modified; restore the index from backup in that case (or rebuild).
+
+A release is reproducible: `build_release.ps1` installs the dependency set exported from
+`uv.lock` with `--require-hashes` into an exact interpreter version, bundles the pinned model
+commit, and writes `requirements.lock.txt`, `sbom.json`, `THIRD-PARTY-NOTICES.txt`,
+`model-manifest.json` and `release-manifest.json` (SHA-256 of every file) next to the runtime.
+`-Zip` adds `SemSearch-<version>.zip` and its `.sha256`.
 
 ## Uninstall
 
 ```
 .\uninstall.ps1              # service + binaries removed; index/config/logs KEPT
-.\uninstall.ps1 -PurgeData   # also delete %ProgramData%\SemSearch (asks for confirmation)
+.\uninstall.ps1 -PurgeData   # also delete the data directory (asks for confirmation)
 ```
+
+The uninstaller reads `install-manifest.json` (locations, service account, the roots that were
+granted) so a custom `-InstallDir`/`-DataDir` install is removed correctly; it stops and
+removes the service, removes the service account's read ACE from each granted root (the account
+disappears with the service, and an orphaned SID would otherwise stay in the ACLs), deletes the
+binaries, removes the PATH entry and `SEMSEARCH_CONFIG`, and reports anything it could not do
+instead of hiding it (exit code 2).
 
 ## Startup reconciliation
 

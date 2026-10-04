@@ -1,9 +1,19 @@
 # API
 
 Base URL: `http://127.0.0.1:8765` (configurable). JSON in, JSON out. Interactive docs at `/docs`.
-All endpoints are unauthenticated and loopback-only; nothing here can modify, move or delete a
-source file. Requests whose `Host` header is not a loopback name (or a configured
-`api.allowed_hosts` entry) are answered with **421** to defeat DNS rebinding from a browser.
+The API is loopback-only; nothing here can modify, move or delete a source file. Requests whose
+`Host` header is not a loopback name (or a configured `api.allowed_hosts` entry) are answered
+with **421** to defeat DNS rebinding from a browser.
+
+**Who can call what.** Maintenance endpoints (`/index/path`, `/remove/path`, `/reindex`,
+`/indexer/*`, `/backup`) require the admin token (`X-SemSearch-Token`, file
+`<state_dir>/admin.token`, readable by the operator account only). Read endpoints are open to
+every local process by default, which is the right trade-off on a single-user workstation and
+the wrong one on a machine with several interactive accounts: the index holds text the
+*service* account could read, and the API answers whoever asks on the loopback interface.
+Set `api.read_token: true` to require the same token for `/search`, `/document`, `/status`,
+`/stats` and `/errors` (`/health` stays open); the CLI sends it automatically when it can read
+the token file.
 
 ## POST /search
 
@@ -120,12 +130,23 @@ directory from the index immediately (the files themselves are untouched).
 | `POST /indexer/incremental` | run an incremental pass now |
 | `POST /indexer/reconcile` | run a reconcile pass now |
 
-## GET /document?path=...&chunks=false
+## GET /document?path=...&chunks=false&offset=0&limit=50
 
-The stored document row (status, method, error, hash, timestamps) and optionally its chunks.
-404 if the path is not indexed.
+The stored document row (status, method, error, hash, timestamps) and optionally a page of
+its chunks in document order (`limit` 1..500; `chunk_count` says how many exist). 404 if the
+path is not indexed or lies outside the configured roots.
+
+## POST /backup
+
+`{"path": "semsearch-2026-10-04.db"}` (admin token) writes a consistent online copy with the
+SQLite backup API. The destination must be a file under `<data_dir>/backups` (or
+`api.backup_dir`); a relative name lands there, anything outside is refused with 403. The
+token is maintenance authority over the index, not a licence to write SQLite files wherever
+the service account can. `semsearch backup <name>` uses this; `semsearch backup <path> --direct`
+copies the database file itself with the caller's own rights.
 
 ## Errors
 
-4xx responses carry `{"detail": "..."}`; unexpected failures return 500 with `{"error": "..."}`
-and are logged.
+4xx responses carry `{"detail": "..."}`. An unexpected failure returns 500 with
+`{"error": "internal error", "ref": "<8 hex>", "hint": "see the service log"}`; the traceback
+and the reference are in the log, never in the response (exception text can carry paths).

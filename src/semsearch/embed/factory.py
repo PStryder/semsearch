@@ -19,5 +19,6 @@ def create_provider(cfg: EmbeddingConfig) -> EmbeddingProvider:
         from .st_provider import SentenceTransformersProvider
         return SentenceTransformersProvider(model=cfg.model, revision=cfg.revision, device=cfg.device,
                                             batch_size=cfg.batch_size, query_prefix=cfg.query_prefix,
-                                            document_prefix=cfg.document_prefix)
+                                            document_prefix=cfg.document_prefix, allow_download=cfg.allow_download,
+                                            max_seq_length=cfg.max_seq_length)
     raise ValueError(f"unknown embedding provider {cfg.provider}")

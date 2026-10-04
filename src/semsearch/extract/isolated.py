@@ -42,6 +42,37 @@ def _child_main(conn, cfg_json: str) -> None:  # pragma: no cover - runs in chil
                 return
 
 
+def _confine(pid: int, memory_mb: int):
+    """Put the extractor child in a Windows job object: a commit limit so a pathological
+    document cannot take the machine down, and kill-on-close so the child never outlives the
+    service. Returns the job handle (keep it alive) or None when unavailable."""
+    if memory_mb <= 0:
+        return None
+    try:
+        import win32api
+        import win32con
+        import win32job
+    except ImportError:
+        return None
+    try:
+        job = win32job.CreateJobObject(None, "")
+        info = win32job.QueryInformationJobObject(job, win32job.JobObjectExtendedLimitInformation)
+        info["BasicLimitInformation"]["LimitFlags"] = (win32job.JOB_OBJECT_LIMIT_PROCESS_MEMORY
+                                                       | win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+                                                       | win32job.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION)
+        info["ProcessMemoryLimit"] = int(memory_mb) * 1024 * 1024
+        win32job.SetInformationJobObject(job, win32job.JobObjectExtendedLimitInformation, info)
+        h = win32api.OpenProcess(win32con.PROCESS_SET_QUOTA | win32con.PROCESS_TERMINATE, False, pid)
+        try:
+            win32job.AssignProcessToJobObject(job, h)
+        finally:
+            h.Close()
+        return job
+    except Exception as e:  # noqa: BLE001 - confinement is best effort (nested jobs on old Windows etc.)
+        log.debug("extractor child not confined to a job object: %s", e)
+        return None
+
+
 class IsolatedExtractor:
     """Wraps a registry: text-like extensions run in-process; everything else in the child."""
 
@@ -66,6 +97,9 @@ class IsolatedExtractor:
         p.start()
         child.close()
         self._proc, self._conn = p, parent
+        self._job = _confine(p.pid, self.cfg.indexing.extractor_memory_mb)
+
+    _job = None
 
     def _kill(self) -> None:
         try:
@@ -93,14 +127,21 @@ class IsolatedExtractor:
         except Exception:
             pass
 
-    def close(self) -> None:
-        with self._lock:
+    def close(self, timeout_s: float = 3.0) -> None:
+        """Shut the child down. If a worker thread still holds the lock (blocked in extract()
+        at shutdown), do not wait on it: terminate the child outright."""
+        if not self._lock.acquire(timeout=timeout_s):
+            self.kill_now()
+            return
+        try:
             try:
                 if self._conn is not None:
                     self._conn.send(None)
             except Exception:
                 pass
             self._kill()
+        finally:
+            self._lock.release()
 
     def extract(self, path: str, extension: str) -> ExtractResult:
         ext = extension.lower()

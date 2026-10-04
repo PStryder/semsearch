@@ -49,7 +49,7 @@ DEFAULT_EXCLUDES = [
 class EmbeddingConfig(BaseModel):
     provider: Literal["onnx", "sentence-transformers", "hashing"] = "onnx"
     model: str = "BAAI/bge-small-en-v1.5"
-    revision: str | None = None
+    revision: str | None = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"  # pinned commit of the default model (same snapshot an unpinned install resolved to)
     # Devices are "cpu", "cuda[:id]", "dml[:id]", "auto", or a logical name defined under
     # `devices` (resolved to the current DirectML ordinal at startup by stable adapter identity).
     # `device` (alias: steady_state_device) embeds documents in steady state; `bulk_device` takes
@@ -101,6 +101,11 @@ class ApiConfig(BaseModel):
     allow_non_loopback: bool = False
     allowed_hosts: list[str] = Field(default_factory=list)  # extra Host header values accepted (DNS-rebinding guard)
     log_requests: bool = False
+    backup_dir: Path | None = None  # where POST /backup may write (default: <data_dir>/backups)
+    # On a machine with several interactive users: also require the admin token for search, /document,
+    # /status, /stats and /errors (only /health stays open). The token file is readable by the operator
+    # account only, so other local accounts cannot read indexed text through the loopback API.
+    read_token: bool = False
 
 
 class IndexingConfig(BaseModel):
@@ -110,6 +115,8 @@ class IndexingConfig(BaseModel):
     auto_start: bool = True
     max_file_bytes: int = 50 * 1024 * 1024
     max_text_chars: int = 2_000_000
+    max_expanded_bytes: int = 512 * 1024 * 1024  # Office containers whose members expand beyond this are not parsed
+    extractor_memory_mb: int = 2048       # commit limit for the extractor child process (Windows job object); 0 = none
     follow_reparse_points: bool = False
     max_attempts: int = 3
     extract_timeout_s: float = 120.0
@@ -223,6 +230,10 @@ class Config(BaseModel):
     @property
     def model_cache_dir(self) -> Path:
         return Path(os.path.expandvars(str(self.embedding.cache_dir))) if self.embedding.cache_dir else self.data_dir / "models"
+
+    @property
+    def backup_dir(self) -> Path:
+        return Path(os.path.expandvars(str(self.api.backup_dir))) if self.api.backup_dir else self.data_dir / "backups"
 
     def validate_for_startup(self) -> list[str]:
         """Problems a human must fix before the service can do useful work. Returns messages;

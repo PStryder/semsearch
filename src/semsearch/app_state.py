@@ -109,7 +109,10 @@ class AppState:
         except OSError as e:
             log.debug("could not persist device resolution: %s", e)
         self.admin_token = load_or_create_admin_token(cfg)
-        os.environ.setdefault("HF_HOME", str(cfg.model_cache_dir))
+        # the configured cache is authoritative: an HF_HOME inherited from the environment must
+        # not redirect the service to another profile's cache (huggingface_hub reads it at import)
+        os.environ["HF_HOME"] = str(cfg.model_cache_dir)
+        os.environ.pop("HF_HUB_CACHE", None)
         t0 = time.perf_counter()
         self.embedder = create_provider(cfg.embedding)
         log.info("embedding provider ready in %.1fs (%s)", time.perf_counter() - t0, self.embedder.fingerprint)

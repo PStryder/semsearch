@@ -209,10 +209,14 @@ def test_changes_made_while_offline_are_reconciled(cfg, root, tmp_path):
     st2 = AppState(cfg, start_indexer=False, isolate_extractors=False)
     st2.indexer.incremental(force=True)
     st2.indexer.reconcile()
-    res = {os.path.basename(p): r for _, p, r in drain(st2)}
-    assert res.get("gpu.txt") == "indexed"
-    assert res.get("added_offline.md") == "indexed"
-    assert res.get("agents_moved.md") == "moved"           # vectors reused via NTFS file id
+    res: dict[str, list[str]] = {}
+    for _, p, r in drain(st2):
+        res.setdefault(os.path.basename(p), []).append(r)
+    assert res.get("gpu.txt") == ["indexed"]
+    assert res.get("added_offline.md") == ["indexed"]
+    # vectors reused via NTFS file id; the heading title carries the new file name, so a cheap
+    # re-embed from stored text follows (no re-extraction)
+    assert res.get("agents_moved.md") == ["moved", "reembedded"]
     assert st2.store.get_document(normalize_path(str(root / "notes.json")))["extract_status"] == "missing"
     assert st2.retriever.search("HBM3 everywhere", "literal", 1)["results"][0]["filename"] == "gpu.txt"
     assert st2.retriever.search("content nobody watched", "literal", 1)["results"][0]["filename"] == "added_offline.md"

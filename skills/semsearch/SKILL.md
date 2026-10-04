@@ -25,8 +25,13 @@ Or over HTTP (any local process; no token needed for search):
 ```
 GET  http://127.0.0.1:8765/search?q=<url-encoded>&mode=hybrid&limit=10[&ext=md,pdf][&root=F:\HexyLab]
 POST http://127.0.0.1:8765/search   {"query": "...", "mode": "hybrid", "limit": 10, "extensions": ["md"], "roots": ["F:\\HexyLab"]}
-GET  http://127.0.0.1:8765/document?path=<full path>&chunks=true     # extracted text of an indexed file (PDF/DOCX too)
+GET  http://127.0.0.1:8765/document?path=<full path>&chunks=true     # extracted text of an indexed file (PDF/DOCX too);
+                                                                      # paged: &offset=0&limit=50 (chunk_count says how many)
 ```
+
+If the installation has `api.read_token: true` (shared machines), reads need the header
+`X-SemSearch-Token: <contents of %ProgramData%\SemSearch\state\admin.token>`; the `semsearch`
+command adds it by itself.
 
 ## Choosing a mode
 
@@ -50,6 +55,8 @@ Try two phrasings if the first top-5 looks wrong; queries cost 10 to 300 ms.
 - `excerpt`: the best-matching chunk, windowed around the first matching term
 - `chunk_ordinal`: which chunk of the file matched (chunks are ~1400 characters in document order)
 - `duplicates`: other paths holding byte-identical content (shown once; every copy is still indexed)
+- `--root` / `--ext` filters are applied while candidates are collected, so a narrow folder or
+  type is never crowded out by a popular one; use them freely
 - `why`: human-readable reasons
 
 Guidance:

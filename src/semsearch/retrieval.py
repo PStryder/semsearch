@@ -111,21 +111,21 @@ class Retriever:
         cands: dict[int, _Cand] = {}
         timings: dict[str, float] = {}
         glob_mode = self._is_glob(query)
-        # a filter is applied after candidate collection, so collect a deeper pool when filtering
-        # (otherwise a narrow root/extension could be starved by the global top-k)
-        pool = 8 if (roots or extensions) else 1
+        root_filter = [normalize_path(r) for r in roots] if roots else None
+        ext_filter = sorted({e.lower() if e.startswith(".") else "." + e.lower() for e in extensions}) if extensions else None
+        # filters are applied INSIDE candidate collection (SQL for the lexical side, an expanding
+        # top-k for the vector side) so a narrow root or extension is never starved by a global
+        # top-k; the post-filter below is only the authorization check
         if mode in ("literal", "hybrid"):
             t = time.perf_counter()
-            self._lexical(query, cands, glob_mode, pool)
+            self._lexical(query, cands, glob_mode, root_filter, ext_filter)
             timings["lexical_ms"] = round((time.perf_counter() - t) * 1000, 1)
         if mode in ("semantic", "hybrid") and not glob_mode:
             t = time.perf_counter()
-            self._semantic(query, cands, pool)
+            self._semantic(query, cands, root_filter, ext_filter)
             timings["semantic_ms"] = round((time.perf_counter() - t) * 1000, 1)
 
         docs = self.store.get_documents(cands.keys())
-        root_filter = [normalize_path(r) for r in roots] if roots else None
-        ext_filter = {e.lower() if e.startswith(".") else "." + e.lower() for e in extensions} if extensions else None
         scored: list[tuple[float, _Cand]] = []
         kept: list[_Cand] = []
         for c in cands.values():
@@ -134,9 +134,7 @@ class Retriever:
                 continue
             if self.roots and not is_within(d["display_path"], self.roots):
                 continue  # belt and braces: never surface a document outside the configured roots
-            if root_filter and not is_within(d["display_path"], root_filter):
-                continue
-            if ext_filter and (d["extension"] or "") not in ext_filter:
+            if not self._doc_passes(d, root_filter, ext_filter):
                 continue
             kept.append(c)
         norms = self._minmax(kept)
@@ -185,12 +183,26 @@ class Retriever:
         quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
         return (" AND " if conjunctive else " OR ").join(quoted)
 
-    def _lexical(self, query: str, cands: dict[int, _Cand], glob_mode: bool, pool: int = 1) -> None:
+    @staticmethod
+    def _doc_passes(d, root_filter: list[str] | None, ext_filter: list[str] | None) -> bool:
+        if root_filter and not is_within(d["display_path"], root_filter):
+            return False
+        if ext_filter and (d["extension"] or "") not in ext_filter:
+            return False
+        return True
+
+    def _lexical(self, query: str, cands: dict[int, _Cand], glob_mode: bool,
+                 root_filter: list[str] | None = None, ext_filter: list[str] | None = None) -> None:
         rc = self.cfg.retrieval
-        k_chunks = min(rc.candidate_chunks * pool, 5000)
-        k_docs = min(rc.candidate_docs * pool, 2000)
+        k_chunks = rc.candidate_chunks
+        k_docs = rc.candidate_docs
         if glob_mode:
-            for doc_id, fn in self.store.filename_glob(query, limit=k_docs * 2):
+            # glob results are a complete list by construction (no ranking), so filtering after is exact
+            found = self.store.filename_glob(query, limit=k_docs * 20)
+            if root_filter or ext_filter:
+                docs = self.store.get_documents(i for i, _ in found)
+                found = [(i, fn) for i, fn in found if i in docs and self._doc_passes(docs[i], root_filter, ext_filter)]
+            for doc_id, fn in found[: k_docs * 2]:
                 c = cands.setdefault(doc_id, _Cand(doc_id))
                 c.filename = 1.0
                 c.lexical = 1.0
@@ -202,9 +214,9 @@ class Retriever:
             return
         rows: list[tuple[int, int, float]] = []
         if len(terms) > 1:
-            rows = self.store.fts(self.fts_expr(terms, True), k_chunks)
+            rows = self.store.fts(self.fts_expr(terms, True), k_chunks, root_filter, ext_filter)
         if not rows:
-            rows = self.store.fts(self.fts_expr(terms, False), k_chunks)
+            rows = self.store.fts(self.fts_expr(terms, False), k_chunks, root_filter, ext_filter)
         best: dict[int, tuple[int, float]] = {}
         for chunk_id, doc_id, s in rows:
             if doc_id not in best or s > best[doc_id][1]:
@@ -218,7 +230,7 @@ class Retriever:
         # filename substring match (all terms present in the filename)
         fn_hits: dict[int, int] = {}
         for t in terms[:6]:
-            for doc_id, fn in self.store.filename_like(t, limit=500 * pool):
+            for doc_id, fn in self.store.filename_like(t, limit=500, roots=root_filter, extensions=ext_filter):
                 fn_hits[doc_id] = fn_hits.get(doc_id, 0) + 1
         for doc_id, n in fn_hits.items():
             frac = n / max(1, min(len(terms), 6))
@@ -251,21 +263,39 @@ class Retriever:
         self._assign_ranks(cands, "lexical")
 
     # ---------- semantic ----------
-    def _semantic(self, query: str, cands: dict[int, _Cand], pool: int = 1) -> None:
+    SEMANTIC_K_CAP = 50000
+
+    def _semantic(self, query: str, cands: dict[int, _Cand],
+                  root_filter: list[str] | None = None, ext_filter: list[str] | None = None) -> None:
         rc = self.cfg.retrieval
         q = self.embedder.embed([query], "query")[0]
-        hits = self.store.knn(q, min(rc.candidate_chunks * pool, 5000))
-        if not hits:
-            return
-        chunk_rows = self.store.get_chunks([cid for cid, _ in hits])
+        k = rc.candidate_chunks
+        filtered = bool(root_filter or ext_filter)
+        total = self.store.vector_count() if filtered else 0
         best: dict[int, tuple[int, float]] = {}
-        for cid, sim in hits:
-            r = chunk_rows.get(cid)
-            if r is None:
-                continue
-            doc_id = int(r["doc_id"])
-            if doc_id not in best or sim > best[doc_id][1]:
-                best[doc_id] = (cid, sim)
+        while True:
+            hits = self.store.knn(q, k)
+            if not hits:
+                return
+            chunk_rows = self.store.get_chunks([cid for cid, _ in hits])
+            best = {}
+            for cid, sim in hits:
+                r = chunk_rows.get(cid)
+                if r is None:
+                    continue
+                doc_id = int(r["doc_id"])
+                if doc_id not in best or sim > best[doc_id][1]:
+                    best[doc_id] = (cid, sim)
+            if not filtered:
+                break
+            # a filter narrows the pool after the vector top-k: widen the top-k until enough
+            # documents inside the filter are found, or the whole index has been ranked
+            docs = self.store.get_documents(best.keys())
+            best = {d: v for d, v in best.items() if d in docs and self._doc_passes(docs[d], root_filter, ext_filter)}
+            limit = min(total, self.SEMANTIC_K_CAP)
+            if len(best) >= rc.candidate_docs or k >= limit:
+                break
+            k = min(k * 4, limit)
         for doc_id, (cid, sim) in best.items():
             c = cands.setdefault(doc_id, _Cand(doc_id))
             c.semantic = float(max(0.0, min(1.0, sim)))
