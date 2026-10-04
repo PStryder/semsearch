@@ -13,7 +13,17 @@ This directory is a self-contained SemSearch release:
 | `release-manifest.json` | SHA-256 of every file here; the installer verifies the runtime against it before and after copying |
 | `LICENSE`, `VERSION`, `semsearch.example.yaml` | |
 
-From an **elevated** PowerShell in this directory:
+The installer needs no console of its own: nothing in `install.ps1` is interactive (only
+`uninstall.ps1 -PurgeData` without `-Yes` asks for confirmation), so it can be run elevated
+and hidden from an ordinary prompt, with the output kept in a transcript:
+
+```
+Start-Process powershell -Verb RunAs -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-Command',
+  "Start-Transcript $env:TEMP\semsearch-install.log -Force; Set-Location '<release dir>'; .\install.ps1; Stop-Transcript"
+```
+
+Only the UAC consent prompt is shown (Windows draws it; it cannot be suppressed). From an
+**elevated** PowerShell in this directory the plain commands are:
 
 ```
 .\install.ps1 -Roots "F:\HexyLab","C:\Users\you\Documents"    # install (or upgrade), start, verify
