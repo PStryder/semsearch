@@ -110,6 +110,20 @@ as `llama.cpp`, `ollama`, `ComfyUI`). `GetURLIndexingState` returns E_NOTIMPL.
 returned `True` for paths that the rule list excludes, so it is not used to decide
 coverage. Coverage is decided by querying SystemIndex for the root itself.
 
+### Crawl scope rules as a configuration source (2026-10-04)
+
+The rule set is also mirrored in the registry under
+`HKLM\SOFTWARE\Microsoft\Windows Search\CrawlScopeManager\Windows\SystemIndex\{DefaultRules,WorkingSetRules}`,
+readable by any account. Each rule is a `file:///X:\[<id>]\path\` URL with `Include`,
+`NoContent` (properties only) and `Default` flags. On this machine the whole volumes are
+included `NoContent` (that is why filename search works everywhere) and a short list of
+folders is content-indexed; 202 working-set exclusions are the user's own. semsearch reads
+this (`inventory/scope.py`) to seed its roots and excludes. The bracketed id is not the
+volume GUID (`GetVolumeNameForVolumeMountPoint`), not the NTFS serial and not the NTFS
+object id (all three compared); it is internal to the indexer, so rules are matched by the
+drive letter they were written with, guarded by the letter being mounted and, for letters
+that have carried several volumes, the path existing.
+
 ## 5. Semantic search in Windows itself
 
 Windows 11 24H2/25H2 ships semantic file search only on Copilot+ PCs (NPU with 40+

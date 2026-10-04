@@ -17,6 +17,15 @@ checks a file without starting anything. `server:` is accepted as a synonym for 
 `semsearch --init-config` prints a starter file. With no file at all the defaults apply and
 `roots` is empty, so nothing is indexed until you add at least one root.
 
+`roots` and `excludes` can be changed while the service runs: `semsearch roots add|remove`,
+the tray icon's Folders menu, the settings page (`/ui`, exclusions) or `POST /config/roots`
+and `POST /config/excludes` with the admin token. The change is written back into this file
+by a textual edit of just those two blocks (comments survive) and applied live. The
+installer seeds a new file's roots and excludes from the Windows Search content scope
+(`semsearch scope` shows it; `semsearch roots import-windows` adds its folders later, and
+`--with-excludes` also adopts its exclusion rules, which removes documents already indexed
+under them).
+
 ## Reference
 
 ```yaml

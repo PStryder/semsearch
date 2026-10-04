@@ -90,6 +90,13 @@ semsearch logs -n 50
 If the API is unreachable, the service is stopped: `semsearch service start` (no elevation needed
 for the operator account). Do not restart or reindex just because a query returned nothing.
 
+## Changing what is indexed (only when the user asks)
+
+`semsearch roots` lists the indexed folders; `semsearch roots add <folder>` / `remove <folder>`
+change them live (the add grants the service read access on the folder, so run it as the user);
+`semsearch scope` shows what Windows Search indexes for content and `semsearch roots import-windows`
+adopts it. The user also has a tray icon and `http://127.0.0.1:8765/ui` for this.
+
 ## What not to do
 
 - Do not call maintenance endpoints (`/reindex`, `/remove/path`, `/index/path`, `/indexer/*`) or

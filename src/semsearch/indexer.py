@@ -33,7 +33,7 @@ import numpy as np
 from .chunking import chunk_text
 from .config import Config
 from .embed.base import EmbeddingProvider
-from .extract.registry import ExtractorRegistry
+from .extract.registry import ExtractorRegistry, clean_text
 from .models import FileEntry
 from .security import (PathRejected, check_indexable, display_path, file_extension, is_excluded, is_within, lstat_info,
                        normalize_path, reparse_roots, root_for, suspected_secret, true_case_path)
@@ -201,6 +201,38 @@ class Indexer:
                 clean = False
         self.state.running = False
         return clean
+
+    def reconfigure(self, roots: list[str], excludes: list[str]) -> dict[str, Any]:
+        """Apply a new root / exclusion set WITHOUT a restart. Documents that fall outside the new
+        roots or under a new exclusion are removed by the scheduler's scope enforcement; a root
+        without a checkpoint is enumerated by its next loop (within seconds); the watcher is
+        restarted on the new root list. The shared Config object is updated in place so every
+        consumer (retrieval, /document, inventories) sees the same roots."""
+        from pathlib import Path
+        # computed before the roots are swapped: the running scheduler may build a new root within
+        # milliseconds of seeing it (and then it has a checkpoint)
+        new = [display_path(r) for r in roots if os.path.isdir(r) and self.store.get_meta(f"checkpoint:{normalize_path(str(r))}") is None]
+        self.cfg.roots = [Path(r) for r in roots]
+        self.cfg.excludes = list(excludes)
+        self.roots = self.cfg.normalized_roots()
+        for inv in (self.fs, self.win):
+            if inv is not None:
+                inv.roots = [str(r) for r in self.cfg.roots]
+                inv.excludes = self.cfg.excludes
+        if self._watcher is not None:
+            self._watcher.stop()
+            self._watcher = None
+        if self.state.running and self.cfg.indexing.watch_filesystem:
+            try:
+                from .watcher import DirectoryWatcher
+                self._watcher = DirectoryWatcher([display_path(r) for r in self.cfg.roots if os.path.isdir(r)], self._on_watch_event)
+                self._watcher.start()
+            except Exception as e:  # noqa: BLE001
+                log.warning("filesystem watcher not restarted: %s", e)
+        self._scope_pending = True
+        self._wake.set()
+        log.info("roots reconfigured: %s (new: %s); %d exclusion patterns", [str(r) for r in self.cfg.roots], new, len(self.cfg.excludes))
+        return {"roots": [display_path(r) for r in self.cfg.roots], "new_roots": new, "excludes": len(self.cfg.excludes)}
 
     def pause(self) -> None:
         self.state.paused = True
@@ -525,7 +557,9 @@ class Indexer:
     _policy_rescan_pending = False
     _scope_pending = False
 
-    def _schedule_loop(self) -> None:
+    def _run_pending_policy(self) -> None:
+        """Scope enforcement and the secret-policy rescan: at start, and again whenever the
+        roots/exclusions are reconfigured at runtime."""
         if self._scope_pending:
             self._scope_pending = False
             try:
@@ -538,12 +572,15 @@ class Indexer:
                 self.enforce_secret_policy()
             except Exception as e:
                 log.exception("secret policy rescan failed: %s", e)
+
+    def _schedule_loop(self) -> None:
         last_inc = 0.0
         # the incremental (GatherTime delta) pass runs on the first loop; the first full
         # reconcile is deferred so a boot does not start with a complete enumeration
         last_rec = time.time() - self.cfg.indexing.reconcile_interval_s + self.cfg.indexing.startup_reconcile_delay_s
         while not self._stop.is_set():
             try:
+                self._run_pending_policy()
                 if self._full_requested:
                     self._full_requested = False
                     self.full_build()
@@ -853,6 +890,9 @@ class Indexer:
             if existing is not None:
                 self.store.tombstone_document(int(existing["id"]))
             return "missing"
+        # whatever the extractor (or its child process) produced, the text stored and embedded must
+        # be valid Unicode: SQLite and the tokenizer both reject lone surrogates
+        res.text = clean_text(res.text)
         # the stat, the hash and the extractor each opened the path separately; if the file was
         # swapped meanwhile (another file, a reparse point, a new version) nothing from this pass
         # may be recorded under the identity captured at the start. Re-queue and let the next pass

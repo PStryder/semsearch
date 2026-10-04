@@ -130,6 +130,16 @@ directory from the index immediately (the files themselves are untouched).
 | `POST /indexer/incremental` | run an incremental pass now |
 | `POST /indexer/reconcile` | run a reconcile pass now |
 
+## Scope configuration
+
+| Endpoint | Auth | Effect |
+|---|---|---|
+| `GET /config` | read | `{config, roots, excludes, read_token, editable}` |
+| `POST /config/roots` `{"add": path}` / `{"remove": path}` / `{"set": [paths]}` | admin | change the indexed folders: persisted into the configuration file, applied live (watcher restarted, new root enumerated, out-of-scope documents removed in the background). A new folder must already be readable by the service account (400 if it does not exist, 403 if unreadable); `semsearch roots add` and the tray grant that first |
+| `POST /config/excludes` `{"excludes": [globs]}` | admin | replace the exclusion list, persisted and applied live |
+| `GET /config/windows-scope` | read | what the Windows Search indexer covers for content in the operator's profile and its exclusion rules, as semsearch roots/globs; read-only |
+| `GET /ui` | none | the settings page (HTML) |
+
 ## GET /document?path=...&chunks=false&offset=0&limit=50
 
 The stored document row (status, method, error, hash, timestamps) and optionally a page of

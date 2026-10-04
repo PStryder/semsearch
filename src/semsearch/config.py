@@ -106,6 +106,9 @@ class ApiConfig(BaseModel):
     # /status, /stats and /errors (only /health stays open). The token file is readable by the operator
     # account only, so other local accounts cannot read indexed text through the loopback API.
     read_token: bool = False
+    # The operator's profile directory (the service has no user profile of its own); used to
+    # narrow Windows' "all users" scope rule to this user's folders. Set by the installer.
+    operator_profile: str | None = None
 
 
 class IndexingConfig(BaseModel):

@@ -153,6 +153,38 @@ class AppState:
         if start_indexer:
             self.indexer.start()
 
+    # ---- runtime scope changes (tray / API) ----
+    def apply_scope(self, roots: list[str] | None = None, excludes: list[str] | None = None) -> dict:
+        """Change the indexed roots and/or the exclusion patterns: persist them into the
+        configuration file (textual edit, comments kept) and apply them live. Paths must be
+        absolute existing directories; the service account must already be able to read a
+        new root (the tray / CLI grant that before calling)."""
+        from .security import display_path, normalize_path
+        new_roots = [display_path(str(r)) for r in self.cfg.roots] if roots is None else []
+        if roots is not None:
+            seen: set[str] = set()
+            for r in roots:
+                p = display_path(str(r))
+                if not os.path.isabs(p):
+                    raise ValueError(f"root is not an absolute path: {r}")
+                if not os.path.isdir(p):
+                    raise ValueError(f"root is not an existing directory: {p}")
+                n = normalize_path(p)
+                if n in seen:
+                    continue
+                seen.add(n)
+                new_roots.append(p)
+        new_excl = list(self.cfg.excludes) if excludes is None else [str(e) for e in excludes if str(e).strip()]
+        if self.cfg.source_path:
+            from .config_edit import update_config_lists
+            update_config_lists(self.cfg.source_path, roots=[p.replace("\\", "/") for p in new_roots] if roots is not None else None,
+                                excludes=new_excl if excludes is not None else None)
+        out = self.indexer.reconfigure(new_roots, new_excl)
+        self.retriever.roots = self.cfg.normalized_roots()
+        self.retriever._cache.clear()
+        out["config"] = str(self.cfg.source_path) if self.cfg.source_path else None
+        return out
+
     def close_without_indexer(self) -> None:
         if hasattr(self.extractor, "close"):
             self.extractor.close()

@@ -17,7 +17,9 @@ param(
   [string[]]$Roots = @(),
   [int]$Port = 8765,
   [switch]$NoStart,
-  [switch]$SkipGpuCheck
+  [switch]$SkipGpuCheck,
+  [switch]$NoWindowsScope,   # do not seed a NEW config's roots from the Windows Search content scope
+  [switch]$NoTray            # do not register / start the per-user tray icon
 )
 $ErrorActionPreference = "Stop"
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
@@ -164,7 +166,22 @@ if (-not (Test-Path $cfgPath)) {
   if ($integrated) { $devices += "    integrated-gpu:   # $($integrated.name)`n      vendor: `"$($integrated.selector.vendor)`"`n      device: `"$($integrated.selector.device)`"`n      subsys: `"$($integrated.selector.subsys)`"" + $(if ($integrated.selector.address) { "`n      address: `"$($integrated.selector.address)`"" } else { "" }); $steady = "integrated-gpu" }
   if ($discrete) { $devices += "    discrete-gpu:     # $($discrete.name)`n      vendor: `"$($discrete.selector.vendor)`"`n      device: `"$($discrete.selector.device)`"`n      subsys: `"$($discrete.selector.subsys)`"" + $(if ($discrete.selector.address) { "`n      address: `"$($discrete.selector.address)`"" } else { "" }); $bulk = "discrete-gpu" }
   if (-not $integrated -and $discrete) { $steady = "discrete-gpu" }
+  $scopeExcludes = @()
+  if (-not $Roots.Count -and -not $NoWindowsScope) {
+    # default scope = what the Windows Search indexer already covers for CONTENT in the operator's
+    # profile (Documents, Desktop, Downloads, OneDrive, ...), plus its exclusion rules
+    $opProfile = (Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq (New-Object System.Security.Principal.NTAccount($Operator)).Translate([System.Security.Principal.SecurityIdentifier]).Value } | Select-Object -First 1).LocalPath
+    $scopeJson = & $py -s -c "import json; from semsearch.inventory.scope import windows_scope_suggestion; s = windows_scope_suggestion(r'$opProfile' or None); print(json.dumps({'roots': s.roots, 'excludes': s.excludes}))"
+    if ($LASTEXITCODE -eq 0 -and $scopeJson) {
+      $scope = $scopeJson | ConvertFrom-Json
+      $Roots = @($scope.roots)
+      $scopeExcludes = @($scope.excludes)
+      Step "seeding roots from the Windows Search content scope: $($Roots -join ', ')  (+ $($scopeExcludes.Count) exclusion rules)"
+    }
+  }
   $rootsYaml = if ($Roots.Count) { ($Roots | ForEach-Object { "  - `"$($_ -replace '\\','/')`"" }) -join "`n" } else { "  # - `"F:/HexyLab`"   <- add your folders, then: semsearch service restart" }
+  $opProfileYaml = ""
+  try { $opProfileYaml = "  operator_profile: `"$(((Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq (New-Object System.Security.Principal.NTAccount($Operator)).Translate([System.Security.Principal.SecurityIdentifier]).Value } | Select-Object -First 1).LocalPath) -replace '\\','/')`"" } catch {}
   $yaml = @"
 # SemSearch configuration (machine-wide). Edit, then: semsearch service restart
 data_dir: "$($DataDir -replace '\\','/')"
@@ -173,7 +190,9 @@ $rootsYaml
 server:
   host: 127.0.0.1
   port: $Port
+$opProfileYaml
   # read_token: true   # on a SHARED machine: require the admin token for search/document reads too
+$(if ($scopeExcludes.Count) { "excludes:   # the default list plus the Windows Search exclusion rules found at install time`n" + ((& $py -s -c "from semsearch.config import DEFAULT_EXCLUDES; [print(e) for e in DEFAULT_EXCLUDES]") + $scopeExcludes | Sort-Object -Unique | ForEach-Object { "  - `"$($_ -replace '\\','/')`"" }) -join "`n" } else { "" })
 embedding:
   model: BAAI/bge-small-en-v1.5
   devices:              # stable selectors written by the installer from the adapters it found
@@ -272,12 +291,28 @@ foreach ($r in $roots) {
   }
 }
 
+# ---- tray icon: a per-user logon task (runs unelevated as the operator; the service has no UI) ----
+$trayTask = $false
+if (-not $NoTray) {
+  Step "registering the tray icon logon task for $Operator"
+  $pyw = Join-Path (Split-Path $py) "pythonw.exe"
+  # an interactive-logon principal needs no stored password (schtasks /RU without /RP cannot do this non-interactively)
+  try {
+    $action = New-ScheduledTaskAction -Execute $pyw -Argument "-s -m semsearch.tray" -WorkingDirectory $InstallDir
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $Operator
+    $principal = New-ScheduledTaskPrincipal -UserId $Operator -LogonType Interactive -RunLevel Limited
+    $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+    Register-ScheduledTask -TaskName "SemSearch Tray" -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    $trayTask = $true
+  } catch { Write-Warning "could not register the tray logon task ($_); start it with: semsearch tray" }
+}
+
 # ---- installation manifest: what this installer owns (read by uninstall.ps1) ----
 $manifest = @{
   version = $version; installed_at = (Get-Date).ToString("o"); install_dir = $InstallDir; data_dir = $DataDir; config_path = $cfgPath
   service = $svc; account = $Account; acl_account = $aclAcct; operator = $Operator; model_cache_dir = $cacheDir
   path_entry_added = $pathAdded; machine_env_semsearch_config = $true; config_written_by_installer = $cfgWritten
-  root_grants = @($granted)
+  root_grants = @($granted); tray_task = $trayTask
 }
 $prevManifest = "$InstallDir.previous\install-manifest.json"
 if (Test-Path $prevManifest) {
@@ -303,6 +338,11 @@ if (-not $ok) { Write-Host "service is running but /health did not answer; see $
 Step "smoke check"
 & "$InstallDir\semsearch.exe" status
 & "$InstallDir\semsearch.cmd" query "semantic search smoke test" -n 1 | Select-Object -First 3
-Write-Host "`nSemSearch $version installed and running. Edit $cfgPath (roots) then: semsearch service restart" -ForegroundColor Green
+if ($trayTask) {
+  # (re)start the tray as the operator, unelevated, through the task (Start-Process from here would run it elevated)
+  Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" | Where-Object { $_.CommandLine -like '*semsearch.tray*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  try { Start-ScheduledTask -TaskName "SemSearch Tray" -ErrorAction Stop } catch { Write-Warning "tray not started ($_); it starts at the next logon, or now with: semsearch tray" }
+}
+Write-Host "`nSemSearch $version installed and running. Folders: tray icon > Folders, or: semsearch roots add <folder>" -ForegroundColor Green
 if (Test-Path "$InstallDir.previous") { Remove-Item -Recurse -Force "$InstallDir.previous" -ErrorAction SilentlyContinue }
 exit 0

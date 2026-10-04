@@ -301,7 +301,62 @@ semsearch rebuild --yes                                      # drop and rebuild 
 semsearch pause | resume | retry-failed
 semsearch service status | start | stop | restart
 semsearch config --validate
+semsearch roots                                              # indexed folders (live, from the service)
+semsearch roots add D:\Projects | roots remove D:\Projects   # grant the service read access, apply live, persist
+semsearch roots import-windows                               # adopt the Windows Search content scope + its exclusions
+semsearch scope                                              # just show what Windows indexes for content
+semsearch tray                                               # run the tray icon in this session
 ```
+
+## Tray icon and the settings page
+
+The service has no UI of its own (Session 0). The installer registers a logon task,
+`SemSearch Tray`, that runs `pythonw.exe -s -m semsearch.tray` as the operator, unelevated,
+and starts it right away. The tray icon (a magnifier: blue when the service answers, amber
+when indexing is paused, grey when it is unreachable) shows the document count and queue in
+its tooltip and offers: the settings page, pause/resume, **Folders** (add a folder through the
+native picker, remove one, or *Use the Windows Search scope*), the logs folder, and service
+start/stop/restart through the DACL the installer granted. "Quit" only closes the tray.
+
+Folder changes are applied **live**, without a service restart, and persisted into
+`semsearch.yaml` by a textual edit that keeps the file's comments. The flow is split by who
+holds which right: the tray (or `semsearch roots add`) grants `NT SERVICE\SemSearch` an
+inheritable read entry on the folder (the folder's owner can do that without elevation; for
+a folder you do not own, run the command elevated) and then calls `POST /config/roots` with
+the admin token; the service verifies it can read the folder, rewrites the configuration,
+restarts its watcher on the new root list, enumerates the new root within seconds and
+removes documents that fall outside the new scope in the background. Removing a folder
+revokes the entry again.
+
+The settings page, `http://127.0.0.1:8765/ui` (plain HTML, no external resources), shows
+status, a search box, the indexed folders, an editable exclusion list (saved with the admin
+token, applied live) and the Windows Search scope suggestion. It does not add folders,
+because it cannot grant the service anything; it points to the tray and the CLI for that.
+
+### Default scope: what Windows Search already indexes
+
+On a fresh install with no `-Roots`, the installer seeds the configuration from the Windows
+Search crawl scope: the folders Windows indexes for *content* (as opposed to the
+properties-only whole-volume rules that give filename search everywhere), narrowed to the
+operator's own profile, plus every exclusion rule the user has set in "Indexing Options",
+translated to semsearch globs. On this workstation that is Documents, Downloads and the
+OneDrive folders on F:, the profile under C:\Users, and the 194 exclusion rules curated
+there over time (dot-directories, AppData, developer trees). `-NoWindowsScope` skips the
+seeding; `semsearch scope` shows the suggestion and `semsearch roots import-windows` adds
+the folders to an existing install. Windows' exclusion rules are adopted only on request
+(`--with-excludes`, or the tray's separate "Adopt Windows Search exclusion rules" item),
+because they were written for a filename index and can cut deep into roots Windows does
+not content-index: applied over this workstation's `F:\HexyLab` they removed 9,998 of
+19,325 indexed documents (git checkouts and developer trees the user had excluded from
+Windows Search but wants semantic search over). The removal is reversible with
+`semsearch reindex --full` after the rules are taken out again.
+
+The rules are read from the crawl scope manager's registry mirror, the same data its COM
+interface enumerates. One measured limit: each rule carries a bracketed volume id that is
+Windows Search's own and matches neither the volume GUID, the NTFS serial nor the object id,
+so volumes are matched by the drive letter in the rule, with the letter required to be
+mounted and, when several ids share a letter (a removable-drive slot), the path required to
+exist.
 
 Search, health, status and stats are open to any local process on the loopback interface.
 Maintenance commands (`reindex`, `rebuild`, `remove`, `pause`, `resume`, `retry-failed`)

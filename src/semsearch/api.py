@@ -15,7 +15,7 @@ from typing import Literal
 import secrets
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from . import __version__
@@ -45,6 +45,16 @@ class ReindexRequest(BaseModel):
     path: str | None = None
     full: bool = False
     wipe: bool = False
+
+
+class RootsRequest(BaseModel):
+    add: str | None = None
+    remove: str | None = None
+    set: list[str] | None = None
+
+
+class ExcludesRequest(BaseModel):
+    excludes: list[str]
 
 
 def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
@@ -240,6 +250,62 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             d["chunk_count"] = len(allc)
             d["chunks"] = [dict(c) for c in allc[offset: offset + limit]]
         return d
+
+    # ---- configuration of the indexed scope (tray / settings page / CLI) ----
+    @app.get("/config")
+    def get_config(_: None = Depends(require_read)):
+        c = st().cfg
+        return {"config": str(c.source_path) if c.source_path else None,
+                "roots": [os.path.abspath(str(r)) for r in c.roots], "excludes": list(c.excludes),
+                "read_token": c.api.read_token, "editable": bool(c.source_path)}
+
+    @app.post("/config/roots")
+    def config_roots(req: RootsRequest, _: None = Depends(require_admin)):
+        """Add or remove one indexed folder, or replace the whole list. Persisted into the
+        configuration file and applied live (no restart). The caller must have granted the
+        service account read access on a new folder beforehand (CLI/tray do)."""
+        from .security import display_path, normalize_path
+        s = st()
+        cur = [display_path(str(r)) for r in s.cfg.roots]
+        if req.set is not None:
+            new = list(req.set)
+        else:
+            new = list(cur)
+            if req.add:
+                p = display_path(req.add)
+                if not os.path.isdir(p):
+                    raise HTTPException(400, f"not an existing directory: {p}")
+                if not os.access(p, os.R_OK):
+                    raise HTTPException(403, f"the service account cannot read {p}: grant it read access first (semsearch roots add does)")
+                if normalize_path(p) not in {normalize_path(x) for x in new}:
+                    new.append(p)
+            if req.remove:
+                n = normalize_path(req.remove)
+                new = [x for x in new if normalize_path(x) != n]
+        try:
+            return s.apply_scope(roots=new)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.post("/config/excludes")
+    def config_excludes(req: ExcludesRequest, _: None = Depends(require_admin)):
+        try:
+            return st().apply_scope(excludes=req.excludes)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+
+    @app.get("/config/windows-scope")
+    def windows_scope(_: None = Depends(require_read)):
+        """What the Windows Search indexer covers for content (this user's profile) and what it
+        excludes, translated to semsearch roots/globs. Read-only; nothing is applied."""
+        from .inventory.scope import windows_scope_suggestion
+        s = windows_scope_suggestion(cfg.api.operator_profile or None)
+        return {"roots": s.roots, "excludes": s.excludes, "skipped": s.skipped, "unmounted_rules": len(s.unmounted)}
+
+    @app.get("/ui", response_class=HTMLResponse)
+    def ui_page():
+        from .ui import PAGE
+        return PAGE
 
     @app.exception_handler(Exception)
     async def _unhandled(request, exc):

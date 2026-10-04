@@ -38,6 +38,11 @@ if ($manifest -and $manifest.root_grants) { $roots = @($manifest.root_grants) }
 elseif ($py -and $cfgPath -and (Test-Path $cfgPath)) { $roots = @(& $py -s -c "from semsearch.config import load_config; [print(str(r)) for r in load_config(r'$cfgPath').roots]" 2>$null) }
 $aclAcct = if ($manifest -and $manifest.acl_account) { $manifest.acl_account } else { "NT SERVICE\SemSearch" }
 
+if (Get-ScheduledTask -TaskName "SemSearch Tray" -ErrorAction SilentlyContinue) {
+  Note "removing the tray logon task"
+  Get-CimInstance Win32_Process -Filter "Name = 'pythonw.exe'" | Where-Object { $_.CommandLine -like '*semsearch.tray*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  try { Unregister-ScheduledTask -TaskName "SemSearch Tray" -Confirm:$false -ErrorAction Stop } catch { Problem "could not delete the 'SemSearch Tray' scheduled task: $_" }
+}
 if (Get-Service $svc -ErrorAction SilentlyContinue) {
   Note "stopping and removing service"
   sc.exe failure $svc reset= 0 actions= "" | Out-Null

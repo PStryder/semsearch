@@ -31,6 +31,14 @@ from .base import Kind, l2_normalize
 log = logging.getLogger(__name__)
 
 
+def _is_utf8(s: str) -> bool:
+    try:
+        s.encode("utf-8")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
 def _files_digest(*paths: Path) -> str:
     import hashlib
     h = hashlib.blake2b(digest_size=8)
@@ -242,6 +250,8 @@ class OnnxProvider:
 
     # ---- inference ----
     def _run(self, session, texts: Sequence[str]) -> np.ndarray:
+        # the Rust tokenizer needs valid UTF-8; a lone surrogate anywhere fails the whole batch
+        texts = [t if _is_utf8(t) else t.encode("utf-16", "surrogatepass").decode("utf-16", "replace") for t in texts]
         enc = self.tokenizer.encode_batch(list(texts))
         ids = np.array([e.ids for e in enc], dtype=np.int64)
         mask = np.array([e.attention_mask for e in enc], dtype=np.int64)

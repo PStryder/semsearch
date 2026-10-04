@@ -62,12 +62,27 @@ class ExtractorRegistry:
             attempts.append({"extractor": ex.name, "status": res.status, "ms": round((time.perf_counter() - t0) * 1000), "error": res.error})
             if res.ok:
                 res.meta["attempts"] = attempts
+                res.text = clean_text(res.text)
                 return res
             last = res
         if last is None:
             return ExtractResult("", "unsupported", "none", error=f"no extractor for {ext}")
         last.meta["attempts"] = attempts
         return last
+
+
+def clean_text(s: str) -> str:
+    """Extracted text must be valid Unicode: PDF parsers can emit lone surrogates (broken
+    CMaps), which cannot be encoded as UTF-8 and make the tokenizer reject the whole batch
+    ("TextEncodeInput must be Union[...]"; seen on a 125-page PDF). Replace them, and drop NULs."""
+    if not s:
+        return s
+    try:
+        s.encode("utf-8")
+    except UnicodeEncodeError:
+        # lone surrogates -> U+FFFD (a UTF-16 round trip keeps every valid character intact)
+        s = s.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
+    return s.replace("\x00", "") if "\x00" in s else s
 
 
 def build_default_registry(cfg: Config) -> ExtractorRegistry:

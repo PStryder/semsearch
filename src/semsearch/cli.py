@@ -32,7 +32,7 @@ from . import __version__
 from .config import ConfigError, example_yaml, load_config, machine_config_path
 
 SUBCOMMANDS = {"query", "status", "health", "stats", "errors", "devices", "reindex", "rebuild", "remove", "pause", "resume",
-               "retry-failed", "logs", "service", "config", "version"}
+               "retry-failed", "logs", "service", "config", "version", "roots", "scope", "tray"}
 
 
 def _client(base: str, token: str | None = None):
@@ -76,6 +76,72 @@ def _print_results(res: dict, verbose: bool) -> None:
         if verbose:
             for w in h.get("why", []):
                 print(f"      - {w}")
+
+
+def _roots_command(a, c, cfg, token: str | None) -> int:
+    from .roots_admin import add_root, remove_root, service_account_from_config
+    acct = service_account_from_config(cfg)
+    if a.action == "list":
+        r = c.get("/config")
+        r.raise_for_status()
+        d = r.json()
+        if a.json:
+            print(json.dumps(d, indent=2))
+            return 0
+        print("config:", d.get("config") or "(none: roots cannot be persisted)")
+        for root in d["roots"]:
+            print("  ", root)
+        print(f"{len(d['excludes'])} exclusion patterns")
+        return 0
+    if token is None:
+        print("changing roots needs the admin token (operator account)", file=sys.stderr)
+        return 3
+    if a.action in ("add", "remove"):
+        if not a.path:
+            print(f"usage: semsearch roots {a.action} <folder>", file=sys.stderr)
+            return 2
+        try:
+            out = add_root(c, a.path, token, acct, grant=not a.no_grant) if a.action == "add" else remove_root(c, a.path, token, acct, revoke=not a.no_grant)
+        except (ValueError, PermissionError, RuntimeError) as e:
+            print(str(e), file=sys.stderr)
+            return 1
+        print(json.dumps(out, indent=2) if a.json else f"{a.action}: {os.path.abspath(a.path)}  (read access {out.get('grant')}; now {len(out['roots'])} roots"
+              + (f", new: {out['new_roots']}" if out.get("new_roots") else "") + ")")
+        return 0
+    # import-windows
+    r = c.get("/config/windows-scope")
+    r.raise_for_status()
+    sg = r.json()
+    cur = {os.path.normcase(x) for x in c.get("/config").json()["roots"]}
+    new = [x for x in sg["roots"] if os.path.normcase(x) not in cur]
+    if not new and not (a.with_excludes and sg["excludes"]):
+        print("nothing to import (every content-indexed folder is already a root; add --with-excludes to adopt Windows' exclusion rules)")
+        return 0
+    print("Folders Windows Search indexes for content that SemSearch does not yet:" if new else "No new folders.")
+    for x in new:
+        print("  ", x)
+    if a.with_excludes:
+        print(f"{len(sg['excludes'])} exclusion rules from Windows will be merged into the configuration; documents already indexed under them are REMOVED.")
+    else:
+        print(f"({len(sg['excludes'])} exclusion rules from Windows are available with --with-excludes; not applied)")
+    if not a.yes:
+        ans = input("Apply? [y/N] ").strip().lower()
+        if ans not in ("y", "yes"):
+            print("nothing changed")
+            return 0
+    failed = 0
+    for x in new:
+        try:
+            out = add_root(c, x, token, acct)
+            print(f"  added {x} (read access {out.get('grant')})")
+        except (ValueError, PermissionError, RuntimeError) as e:
+            failed += 1
+            print(f"  FAILED {x}: {e}", file=sys.stderr)
+    if a.with_excludes and sg["excludes"]:
+        merged = sorted(set(cfg.excludes) | set(sg["excludes"]))
+        rr = c.post("/config/excludes", json={"excludes": merged})
+        print(f"  exclusions: {rr.json().get('excludes') if rr.status_code < 400 else rr.text}")
+    return 1 if failed else 0
 
 
 def _fmt_ts(ts):
@@ -245,6 +311,14 @@ def dispatch(argv: list[str]) -> int:
     sv.add_argument("action", choices=["status", "start", "stop", "restart"])
     cf = sub.add_parser("config")
     cf.add_argument("--validate", action="store_true")
+    ro = sub.add_parser("roots", help="list / add / remove indexed folders on the running service (applied live, persisted to the config)")
+    ro.add_argument("action", choices=["list", "add", "remove", "import-windows"], nargs="?", default="list")
+    ro.add_argument("path", nargs="?", help="folder for add/remove")
+    ro.add_argument("--no-grant", action="store_true", help="do not touch the folder's ACL (the service can already read it)")
+    ro.add_argument("--yes", "-y", action="store_true", help="import-windows: apply without asking")
+    ro.add_argument("--with-excludes", action="store_true", help="import-windows: ALSO adopt Windows' exclusion rules (documents already indexed under them are removed)")
+    sub.add_parser("scope", help="show what the Windows Search indexer covers for content in your profile, as semsearch roots/excludes")
+    sub.add_parser("tray", help="run the tray icon in this session (normally started by the logon task)")
     a = ap.parse_args(argv)
     a.json = bool(a.json or getattr(a, "json_sub", False))
 
@@ -270,6 +344,30 @@ def dispatch(argv: list[str]) -> int:
         return 0 if not problems else 1
     if a.cmd == "service":
         return service_control(a.action, cfg.service.name)
+    if a.cmd == "scope":
+        from .inventory.scope import windows_scope_suggestion
+        sg = windows_scope_suggestion()
+        if a.json:
+            print(json.dumps({"roots": sg.roots, "excludes": sg.excludes, "skipped": sg.skipped, "unmounted_rules": len(sg.unmounted)}, indent=2))
+            return 0
+        print("Folders Windows Search indexes for CONTENT (this profile):")
+        for r in sg.roots:
+            print("  ", r)
+        print(f"Exclusion rules from Windows ({len(sg.excludes)}):")
+        for e in sg.excludes[:40]:
+            print("  ", e)
+        if len(sg.excludes) > 40:
+            print(f"   ... {len(sg.excludes) - 40} more")
+        if sg.skipped:
+            print("Skipped rules:")
+            for x in sg.skipped:
+                print("  ", x)
+        print(f"({len(sg.unmounted)} rules are for volumes not mounted right now)")
+        print("Apply with: semsearch roots import-windows")
+        return 0
+    if a.cmd == "tray":
+        from .tray import main as tray_main
+        return tray_main(["--config", str(cfg.source_path)] if cfg.source_path else [])
     if a.cmd == "logs":
         p = cfg.log_dir / "semsearch.log"
         if not p.exists():
@@ -297,9 +395,12 @@ def dispatch(argv: list[str]) -> int:
                 print(f"       selector: {json.dumps(selector_for(ad))}")
         return 0
 
-    token = _admin_token(cfg) if (a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") or cfg.api.read_token) else None
+    needs_admin = a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") or (a.cmd == "roots" and a.action != "list")
+    token = _admin_token(cfg) if (needs_admin or cfg.api.read_token) else None
     try:
         with _client(base, token) as c:
+            if a.cmd == "roots":
+                return _roots_command(a, c, cfg, token)
             if a.cmd == "health":
                 r = c.get("/health")
                 print(json.dumps(r.json(), indent=2))
