@@ -127,6 +127,7 @@ directory from the index immediately (the files themselves are untouched).
 |---|---|
 | `POST /indexer/pause` / `POST /indexer/resume` | stop/start job processing |
 | `POST /indexer/retry-failed` | move `failed` jobs back to `pending` |
+| `POST /indexer/prune` | delete pending jobs the current roots/exclusions reject and remove out-of-scope documents (runs automatically after a scope change) |
 | `POST /indexer/incremental` | run an incremental pass now |
 | `POST /indexer/reconcile` | run a reconcile pass now |
 

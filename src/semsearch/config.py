@@ -34,6 +34,9 @@ DEFAULT_EXCLUDES = [
     "**/.idea/**", "**/.vs/**", "**/bin/**", "**/obj/**", "**/target/**", "**/.cache/**",
     "**/site-packages/**", "**/*.min.js", "**/*.min.css", "**/*.lock", "**/package-lock.json",
     "**/$RECYCLE.BIN/**", "**/System Volume Information/**",
+    # a user profile as a root: application state and the profile's dot-directories are never
+    # documents (Windows Search excludes the same two; measured: 368k files queued without them)
+    "**/AppData/**", "**/Users/*/.*/**",
     # semsearch's own evaluation corpus and indexes (copies of the user's files)
     "**/semsearch/eval/corpus/**", "**/semsearch/eval/index_*/**", "**/semsearch/dist/**",
     # credential-looking locations (path globs) ...

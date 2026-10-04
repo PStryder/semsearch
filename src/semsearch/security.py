@@ -123,6 +123,34 @@ def suspected_secret(text: str, max_scan_chars: int = 400_000) -> str | None:
     return None
 
 
+def compile_excludes(patterns: list[str]):
+    """The same decision as is_excluded(), compiled to two regular expressions so a sweep over
+    hundreds of thousands of paths costs one match each instead of len(patterns) fnmatch calls.
+    Returns matcher(path, is_dir=False) -> bool."""
+    full: list[str] = []
+    bare: list[str] = []
+    for pat in patterns:
+        p = pat.lower()
+        if "/" not in p:
+            bare.append(fnmatch.translate(p))
+            continue
+        full.append(fnmatch.translate(p))
+        if p.endswith("/**"):
+            full.append(fnmatch.translate(p[:-3]))
+    full_re = re.compile("|".join(f"(?:{x})" for x in full)) if full else None
+    bare_re = re.compile("|".join(f"(?:{x})" for x in bare)) if bare else None
+
+    def match(path: str, is_dir: bool = False) -> bool:
+        low = to_glob_form(path).lower()
+        if full_re is not None and full_re.match(low):
+            return True
+        if not is_dir and bare_re is not None and bare_re.match(low.rsplit("/", 1)[-1]):
+            return True
+        return False
+
+    return match
+
+
 def is_excluded(path: str, patterns: list[str], is_dir: bool = False) -> bool:
     """Exclusion globs. A pattern containing '/' is matched against the full path (forward
     slashes); a bare pattern such as '*.pem' or '*secret*' is matched against the FILE name

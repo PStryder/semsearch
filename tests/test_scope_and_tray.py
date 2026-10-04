@@ -254,7 +254,7 @@ def test_tray_menu_builds_without_pystray_backend(built, monkeypatch):
     """Every menu callback must exist: a typo there only shows up when a user clicks."""
     from semsearch.tray import TrayApp
     t = TrayApp(built.cfg)
-    monkeypatch.setattr(t, "roots", lambda: ["C:\one", "D:\two"])
+    monkeypatch.setattr(t, "roots", lambda: [r"C:\one", r"D:\two"])
     t.health, t.status = {"version": "0.3.0", "documents": 3}, {"indexer": {"paused": False, "queue": {}}}
     menu = t.build_menu()
     items = list(menu.items)
@@ -262,6 +262,30 @@ def test_tray_menu_builds_without_pystray_backend(built, monkeypatch):
     folders = next(i for i in items if "Folders" in str(i.text))
     sub = [str(i.text) for i in folders.submenu.items]
     assert sub[:2] == ["Add folder...", "Add the folders Windows Search indexes..."] and "Adopt Windows Search exclusion rules..." in sub
-    assert any(s.startswith("Remove C:\one") for s in sub)
+    assert any(s.startswith(r"Remove C:\one") for s in sub)
     for attr in ("add_folder", "use_windows_scope", "adopt_windows_excludes", "remove_folder", "toggle_pause", "open_settings", "open_logs", "quit"):
         assert callable(getattr(t, attr))
+
+
+# ---------------------------------------------------------------- queue pruning on scope change
+
+def test_exclusion_change_prunes_the_pending_queue(built, root, cfg):
+    from semsearch.security import compile_excludes, is_excluded
+    for i in range(50):
+        write(str(root / "appdata-ish" / f"state{i}.json"), '{"k": %d}' % i)
+    write(str(root / "keep.md"), "# keep\n\nkeep me\n")
+    built.indexer.index_path(str(root))  # enqueues everything (not drained)
+    pending_before = built.store.queue_stats()["pending"]
+    assert pending_before >= 51
+    out = built.indexer.reconfigure([str(root)], list(cfg.excludes) + ["**/appdata-ish/**"])
+    assert out["pruned_jobs"] == 50
+    assert built.store.queue_stats()["pending"] == pending_before - 50
+    res = [r for _, _, r in drain(built)]
+    assert "indexed" in res and not any(p.endswith(".json") and "appdata-ish" in p for _, p, _ in [])
+    # compiled matcher agrees with is_excluded on bare and full-path patterns
+    pats = ["**/appdata-ish/**", "*.pem", "**/Users/*/.*/**", "**/AppData/**"]
+    m = compile_excludes(pats)
+    for p, d in [(r"C:\Users\me\AppData\Local\x.txt", False), (r"C:\Users\me\.claude\notes.md", False), (r"F:\HexyLab\.github\ci.yml", False),
+                 (r"F:\x\server.pem", False), (r"F:\x\pem", False), (str(root / "appdata-ish"), True), (r"C:\Users\me\AppData", True)]:
+        assert m(p, d) == is_excluded(p, pats, d), p
+    assert m(r"C:\Users\me\AppData\Local\x.txt") and m(r"C:\Users\me\.claude\notes.md") and not m(r"F:\HexyLab\.github\ci.yml")

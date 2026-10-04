@@ -32,7 +32,7 @@ from . import __version__
 from .config import ConfigError, example_yaml, load_config, machine_config_path
 
 SUBCOMMANDS = {"query", "status", "health", "stats", "errors", "devices", "reindex", "rebuild", "remove", "pause", "resume",
-               "retry-failed", "logs", "service", "config", "version", "roots", "scope", "tray"}
+               "retry-failed", "logs", "service", "config", "version", "roots", "scope", "tray", "prune"}
 
 
 def _client(base: str, token: str | None = None):
@@ -317,6 +317,7 @@ def dispatch(argv: list[str]) -> int:
     ro.add_argument("--no-grant", action="store_true", help="do not touch the folder's ACL (the service can already read it)")
     ro.add_argument("--yes", "-y", action="store_true", help="import-windows: apply without asking")
     ro.add_argument("--with-excludes", action="store_true", help="import-windows: ALSO adopt Windows' exclusion rules (documents already indexed under them are removed)")
+    sub.add_parser("prune", help="drop queued jobs and indexed documents that the current roots/exclusions reject")
     sub.add_parser("scope", help="show what the Windows Search indexer covers for content in your profile, as semsearch roots/excludes")
     sub.add_parser("tray", help="run the tray icon in this session (normally started by the logon task)")
     a = ap.parse_args(argv)
@@ -395,12 +396,16 @@ def dispatch(argv: list[str]) -> int:
                 print(f"       selector: {json.dumps(selector_for(ad))}")
         return 0
 
-    needs_admin = a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed") or (a.cmd == "roots" and a.action != "list")
+    needs_admin = a.cmd in ("reindex", "rebuild", "remove", "pause", "resume", "retry-failed", "prune") or (a.cmd == "roots" and a.action != "list")
     token = _admin_token(cfg) if (needs_admin or cfg.api.read_token) else None
     try:
         with _client(base, token) as c:
             if a.cmd == "roots":
                 return _roots_command(a, c, cfg, token)
+            if a.cmd == "prune":
+                r = c.post("/indexer/prune", timeout=600.0)
+                print(json.dumps(r.json(), indent=2))
+                return 0 if r.status_code < 400 else 1
             if a.cmd == "health":
                 r = c.get("/health")
                 print(json.dumps(r.json(), indent=2))

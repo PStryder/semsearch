@@ -39,6 +39,8 @@ excludes:                               # setting this REPLACES the default list
   - "**/.git/**"                        # a pattern with '/' matches the full path (forward slashes)
   - "*.pem"                             # a bare pattern matches the FILE name only, never a folder name
   # defaults: VCS dirs, node_modules, venvs, caches, build output, minified bundles, lockfiles,
+  # AppData and the dot-directories of user profiles (**/AppData/**, **/Users/*/.*/**: a profile
+  # used as a root otherwise queues hundreds of thousands of application-state files),
   # credential locations (.ssh, .aws, .azure, .gnupg, .kube) and credential-looking file names
   # (.env*, *.pem, *.key, *.pfx, *.p12, id_rsa*, *secret*, *credential*, *password*, *api_key*, ...)
 text_extensions: [...]                  # read directly as text (code, markdown, json, yaml, ...)

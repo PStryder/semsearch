@@ -305,8 +305,16 @@ semsearch roots                                              # indexed folders (
 semsearch roots add D:\Projects | roots remove D:\Projects   # grant the service read access, apply live, persist
 semsearch roots import-windows                               # adopt the Windows Search content scope + its exclusions
 semsearch scope                                              # just show what Windows indexes for content
+semsearch prune                                              # drop queued jobs / indexed documents the current scope rejects
 semsearch tray                                               # run the tray icon in this session
 ```
+
+Changing the exclusions (tray, settings page, CLI, API) prunes the pending queue in the same
+step: jobs the new rules reject are deleted in one pass instead of being rejected one at a
+time when their turn comes. Measured need: adding a profile as a root without the AppData
+rule queued 368,000 files, and the worker rejected them at five a second. `semsearch prune`
+runs the same pass by hand, together with the scope sweep that removes out-of-scope
+documents.
 
 ## Tray icon and the settings page
 

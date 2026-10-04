@@ -35,8 +35,8 @@ from .config import Config
 from .embed.base import EmbeddingProvider
 from .extract.registry import ExtractorRegistry, clean_text
 from .models import FileEntry
-from .security import (PathRejected, check_indexable, display_path, file_extension, is_excluded, is_within, lstat_info,
-                       normalize_path, reparse_roots, root_for, suspected_secret, true_case_path)
+from .security import (PathRejected, check_indexable, compile_excludes, display_path, file_extension, is_excluded, is_within,
+                       lstat_info, normalize_path, reparse_roots, root_for, suspected_secret, true_case_path)
 from .store.db import Store, file_hash, text_hash
 
 log = logging.getLogger(__name__)
@@ -231,8 +231,25 @@ class Indexer:
                 log.warning("filesystem watcher not restarted: %s", e)
         self._scope_pending = True
         self._wake.set()
+        pruned = self.prune_queue()
         log.info("roots reconfigured: %s (new: %s); %d exclusion patterns", [str(r) for r in self.cfg.roots], new, len(self.cfg.excludes))
-        return {"roots": [display_path(r) for r in self.cfg.roots], "new_roots": new, "excludes": len(self.cfg.excludes)}
+        return {"roots": [display_path(r) for r in self.cfg.roots], "new_roots": new, "excludes": len(self.cfg.excludes), "pruned_jobs": pruned}
+
+    def prune_queue(self) -> int:
+        """Drop pending jobs the current scope rejects (outside the roots, excluded, or an
+        extension no longer indexed). A deep queue built before an exclusion was added would
+        otherwise be rejected one job at a time (measured: 368k jobs at 5/s)."""
+        reject = compile_excludes(self.cfg.excludes)
+        roots = self.roots
+        allowed = self.allowed_ext
+
+        def out_of_scope(path: str) -> bool:
+            return not is_within(path, roots) or reject(path) or file_extension(path) not in allowed
+
+        n = self.store.prune_pending_jobs(out_of_scope)
+        if n:
+            log.info("queue pruned: %d pending jobs no longer in scope", n)
+        return n
 
     def pause(self) -> None:
         self.state.paused = True
@@ -717,11 +734,12 @@ class Indexer:
             # an empty roots list is a configuration error, not an instruction to delete the index
             log.warning("no roots configured: scope enforcement skipped (nothing is searchable until roots are set)")
             return {"outside_roots": 0, "policy": 0}
+        reject = compile_excludes(self.cfg.excludes)
         for doc_id, p, _ in list(self.store.iter_paths()):
             if not is_within(p, self.roots):
                 self.store.remove_document_id(doc_id)
                 removed_root += 1
-            elif is_excluded(p, self.cfg.excludes) or file_extension(p) not in self.allowed_ext:
+            elif reject(p) or file_extension(p) not in self.allowed_ext:
                 self.store.remove_document_id(doc_id)
                 removed_policy += 1
         if removed_root or removed_policy:

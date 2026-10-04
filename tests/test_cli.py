@@ -6,7 +6,10 @@ from semsearch.cli import main
 
 
 def write_cfg(tmp_path, root):
+    from semsearch.config import DEFAULT_EXCLUDES
     cfg = {"roots": [str(root)], "data_dir": str(tmp_path / "data"), "extra_extensions": [".dat"],
+           # tmp_path is under %LOCALAPPDATA%: drop the profile-protection defaults for this test tree
+           "excludes": [e for e in DEFAULT_EXCLUDES if e not in ("**/AppData/**", "**/Users/*/.*/**")],
            "embedding": {"provider": "hashing"},
            "indexing": {"use_windows_search": False, "watch_filesystem": False}}
     p = tmp_path / "semsearch.yaml"

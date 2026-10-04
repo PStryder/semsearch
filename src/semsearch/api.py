@@ -224,6 +224,15 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     def retry_failed(_: None = Depends(require_admin)):
         return {"requeued": st().indexer.retry_failed()}
 
+    @app.post("/indexer/prune")
+    def prune_now(_: None = Depends(require_admin)):
+        """Drop pending jobs the current roots/exclusions reject, and remove indexed documents
+        that are out of scope (the same pass that runs after a configuration change)."""
+        s = st()
+        pruned = s.indexer.prune_queue()
+        removed = s.indexer.enforce_scope()
+        return {"pruned_jobs": pruned, "removed_documents": removed}
+
     @app.post("/indexer/incremental")
     def incremental_now(_: None = Depends(require_admin)):
         return st().indexer.incremental()

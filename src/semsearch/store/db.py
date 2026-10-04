@@ -780,6 +780,25 @@ class Store:
         with self.lock:
             self.conn.execute("DELETE FROM jobs")
 
+    def prune_pending_jobs(self, reject) -> int:
+        """Delete pending jobs whose path `reject(path)` says is out of scope now (new exclusion,
+        removed root). Scans in batches so a queue of hundreds of thousands stays cheap."""
+        removed = 0
+        last = 0
+        while True:
+            rows = self._r().execute("SELECT id, path FROM jobs WHERE state='pending' AND id > ? ORDER BY id LIMIT 5000", (last,)).fetchall()
+            if not rows:
+                break
+            last = int(rows[-1][0])
+            doomed = [int(r[0]) for r in rows if reject(r[1])]
+            if doomed:
+                with self.lock:
+                    for i in range(0, len(doomed), 500):
+                        part = doomed[i:i + 500]
+                        self.conn.execute(f"DELETE FROM jobs WHERE id IN ({','.join('?' * len(part))}) AND state='pending'", part)
+                removed += len(doomed)
+        return removed
+
     def queue_stats(self) -> dict[str, int]:
         rows = self._r().execute("SELECT state, COUNT(*) FROM jobs GROUP BY state").fetchall()
         d = {"pending": 0, "running": 0, "failed": 0}

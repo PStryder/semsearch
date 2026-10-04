@@ -39,6 +39,9 @@ def root(tmp_path):
 @pytest.fixture
 def cfg(root, tmp_path):
     c = Config(roots=[str(root)], data_dir=str(tmp_path / "data"), extra_extensions=[".dat"])
+    # pytest's tmp_path lives under %LOCALAPPDATA%\Temp, which the default profile-protection
+    # rules exclude; the tests exercise the rules themselves explicitly where they matter
+    c.excludes = [e for e in c.excludes if e not in ("**/AppData/**", "**/Users/*/.*/**")]
     c.embedding.provider = "hashing"
     c.indexing.use_windows_search = False
     c.indexing.watch_filesystem = False
