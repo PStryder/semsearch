@@ -73,6 +73,10 @@ class EmbeddingConfig(BaseModel):
         "discrete-gpu": {"integrated": False},
     })
     bulk_threshold: int = 500  # queue depth (pending jobs) above which bulk_device is used
+    # one document needing at least this many NEW vectors (reused ones do not count) is embedded on
+    # bulk_device whatever the queue depth: 200 chunks is ~30 s on an integrated GPU, ~1 s on a
+    # dedicated one. 0 = off (only bulk_threshold and full builds use bulk_device)
+    bulk_doc_chunks: int = Field(default=200, ge=0)
     cache_dir: Path | None = None  # Hugging Face cache for model files (default: <data_dir>/models)
 
     @model_validator(mode="before")

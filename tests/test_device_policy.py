@@ -65,3 +65,63 @@ def test_bulk_mode_follows_full_build_and_queue_depth(app, cfg):
     finally:
         app.indexer.stop()
     assert prov.calls and all(m == "steady" for m, _ in prov.calls)
+
+
+def _switching(app):
+    prov = SwitchingProvider()
+    app.indexer.embedder = prov
+    app.indexer.fingerprint = prov.fingerprint
+    app.retriever.embedder = prov
+    app.store.ensure_vectors(prov.fingerprint, prov.dim)
+    return prov
+
+
+def _long_doc(n_paragraphs, edit=""):
+    return "\n\n".join(f"Paragraph {i} about subject {i * 7919 % 1000}: " + ("distinct words %d " % i) * 60 + (edit if i == 0 else "")
+                       for i in range(n_paragraphs))
+
+
+def test_long_document_goes_to_bulk_on_a_quiet_queue(app, cfg, root):
+    from conftest import drain, write
+    prov = _switching(app)
+    cfg.embedding.bulk_doc_chunks = 5
+    write(str(root / "short.md"), "# Short\n\none small note\n")
+    app.indexer.index_path(str(root / "short.md"))
+    drain(app)
+    assert prov.calls and all(m == "steady" for m, _ in prov.calls)  # below the threshold: steady
+    prov.calls.clear()
+    write(str(root / "long.md"), _long_doc(12))
+    app.indexer.index_path(str(root / "long.md"))
+    drain(app)
+    assert sum(n for _, n in prov.calls) >= 5 and all(m == "bulk" for m, _ in prov.calls)
+
+
+def test_reused_vectors_do_not_count_and_zero_disables(app, cfg, root):
+    from conftest import drain, write
+    prov = _switching(app)
+    cfg.embedding.bulk_doc_chunks = 5
+    write(str(root / "long.md"), _long_doc(12))
+    app.indexer.index_path(str(root / "long.md"))
+    drain(app)
+    # one paragraph edited: the other chunks reuse their vectors, so the edit is steady work
+    prov.set_bulk_mode(False)
+    prov.calls.clear()
+    write(str(root / "long.md"), _long_doc(12, edit=" an edit"))
+    app.indexer.index_path(str(root / "long.md"))
+    drain(app)
+    assert prov.calls and sum(n for _, n in prov.calls) < 5 and all(m == "steady" for m, _ in prov.calls)
+    # 0 turns the per-document rule off
+    cfg.embedding.bulk_doc_chunks = 0
+    prov.calls.clear()
+    write(str(root / "other.md"), _long_doc(12).replace("Paragraph", "Section"))
+    app.indexer.index_path(str(root / "other.md"))
+    drain(app)
+    assert sum(n for _, n in prov.calls) >= 5 and all(m == "steady" for m, _ in prov.calls)
+
+
+def test_bulk_doc_chunks_default_and_validation():
+    import pytest
+    from semsearch.config import Config
+    assert Config().embedding.bulk_doc_chunks == 200
+    with pytest.raises(Exception):
+        Config.model_validate({"embedding": {"bulk_doc_chunks": -1}})

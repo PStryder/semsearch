@@ -247,6 +247,7 @@ $($devices -join "`n")
   query_device: cpu
   fallback_device: cpu
   bulk_threshold: 500
+  bulk_doc_chunks: 200    # one document needing this many new vectors uses bulk_device (0 = off)
 indexing:
   use_windows_search: true
   poll_interval_s: 30

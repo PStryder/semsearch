@@ -1093,8 +1093,6 @@ class Indexer:
             or len(chunks) >= self.cfg.chunking.max_chunks_per_doc
         fields["n_embedded"] = n_embed
         fields["text_truncated"] = int(truncated)
-        if n_embed >= 1000:
-            self._set_bulk(not self._bulk_gpu_busy_elsewhere())   # a very long document is bulk work
         # embed BEFORE touching the document row: if this raises, the previous version stays
         # intact and searchable, and the retry sees the old stat/hash so it re-extracts
         vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks[:n_embed])
@@ -1134,6 +1132,11 @@ class Indexer:
                 if hashes[i] not in uniq:
                     uniq[hashes[i]] = len(texts)
                     texts.append(chunks[i].for_embedding)
+            # a long document is bulk work, counted in vectors still to compute: an edit to one
+            # paragraph of a long document reuses the rest and stays on the steady device
+            thr = self.cfg.embedding.bulk_doc_chunks
+            if thr > 0 and len(texts) >= thr:
+                self._set_bulk(not self._bulk_gpu_busy_elsewhere())
             # batches with a stop check between them: a 400-chunk document on the integrated GPU
             # takes a minute, which must not hold the stop of the service past its budget
             bs = max(1, int(getattr(self.cfg.embedding, "batch_size", 32)))

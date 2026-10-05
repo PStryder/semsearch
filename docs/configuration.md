@@ -60,6 +60,7 @@ embedding:
     integrated-gpu: {integrated: true}
     discrete-gpu: {integrated: false}
   bulk_threshold: 500                   # pending jobs above which bulk_device is used
+  bulk_doc_chunks: 200                  # one document needing this many NEW vectors uses bulk_device (0 = off)
   cache_dir: null                       # model cache (default <data_dir>/models; HF_HOME)
   batch_size: 32
   max_seq_length: 512
@@ -217,11 +218,12 @@ with `POST /config/devices`; either way the change is written into this file and
 
 `query_device` is left alone (CPU is fastest for one query). Cancel leaves the profile unset and
 the tray asks again at its next start; without a dedicated GPU there is nothing to choose and it
-never asks. Under `light`, one document with 1,000 or more chunks to embed (about 1.4 million
-characters) goes to `bulk_device` whatever the queue depth; anything smaller, arriving as fewer
-than `bulk_threshold` jobs, stays on the integrated GPU. A 999-chunk document takes about
-2.5 minutes there (~7 chunks/s) against about 4 seconds on the RTX 4080. `gpu` is the profile
-for catching up quickly.
+never asks. Under `light`, one document that needs `bulk_doc_chunks` (default 200) or more new
+vectors goes to `bulk_device` whatever the queue depth; vectors reused from the previous version
+do not count, so editing a paragraph of a long document stays on the integrated GPU. 200 chunks
+is about 280,000 characters: ~30 s on the integrated Radeon (~7 chunks/s), ~1 s on the RTX 4080.
+Set it to 0 to keep single documents off the bulk device. `gpu` is the profile for catching up
+quickly.
 
 With the light policy a modified 10-chunk document costs about 1.5 s on the integrated GPU, a full
 first pass over ~500k chunks about 35 minutes on the 4080 (versus ~5 h on CPU, ~20 h on the
