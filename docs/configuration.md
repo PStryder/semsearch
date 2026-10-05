@@ -217,9 +217,11 @@ with `POST /config/devices`; either way the change is written into this file and
 
 `query_device` is left alone (CPU is fastest for one query). Cancel leaves the profile unset and
 the tray asks again at its next start; without a dedicated GPU there is nothing to choose and it
-never asks. Under `light`, work that arrives as fewer than `bulk_threshold` jobs runs on the
-integrated GPU even when each job is large (an upgrade that re-extracts a hundred big files, say):
-`gpu` is the profile for catching up quickly.
+never asks. Under `light`, one document with 1,000 or more chunks to embed (about 1.4 million
+characters) goes to `bulk_device` whatever the queue depth; anything smaller, arriving as fewer
+than `bulk_threshold` jobs, stays on the integrated GPU. A 999-chunk document takes about
+2.5 minutes there (~7 chunks/s) against about 4 seconds on the RTX 4080. `gpu` is the profile
+for catching up quickly.
 
 With the light policy a modified 10-chunk document costs about 1.5 s on the integrated GPU, a full
 first pass over ~500k chunks about 35 minutes on the 4080 (versus ~5 h on CPU, ~20 h on the
