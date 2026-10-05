@@ -69,7 +69,12 @@ Response:
         "semantic: best chunk 17 cosine 0.799 (rank 1)",
         "lexical: bm25 1.000 (rank 1); terms in excerpt: ['agents', 'destructive', 'actions']"
       ],
-      "doc_id": 17
+      "doc_id": 17,
+      "coverage": {                        // ONLY on partially indexed documents
+        "chunks": 9120, "embedded_chunks": 2000,
+        "note": "semantic search covers the first 2,000 of 9,120 chunks; all are searchable literally"
+        // and/or "text_truncated": true when the text exceeded indexing.max_text_chars
+      }
     }
   ]
 }
@@ -110,8 +115,10 @@ and returns `match_type: "filename"` hits.
 ## GET /stats
 
 Store-level statistics: document/chunk/vector counts, documents awaiting embedding,
-tombstoned documents, counts by extraction status, extension and method, DB size,
-queue depth, error count, plus the indexer counters and throughput.
+tombstoned documents, `documents_partially_embedded` (data files beyond their embedding limit),
+`documents_text_truncated` (text beyond `indexing.max_text_chars`), counts by extraction
+status, extension and method, DB size, queue depth, error count, plus the indexer counters and
+throughput. Each truncated document also has a `limit` entry in `/errors`.
 
 ## GET /errors?limit=100
 

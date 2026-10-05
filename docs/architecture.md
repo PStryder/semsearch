@@ -102,6 +102,28 @@ Full builds use the same union: Windows Search first (fast, includes metadata an
 user's indexer exclusions), then a filesystem walk to pick up anything the indexer has not
 gathered yet.
 
+## Coverage of large documents
+
+Every chunk of a document goes into the full-text index, up to `indexing.max_text_chars`
+(50 million characters, matching the 50 MB file limit). Embeddings are selective: prose and
+code are embedded in full; data formats (`chunking.data_extensions`: JSON, JSONL, CSV, TSV,
+logs, HTML, XML) only for their first `chunking.embed_chunks_data` chunks (2,000). Beyond that
+a data file is searchable literally (an identifier or exact phrase anywhere in a 20 MB JSON is
+found) but not semantically: thousands of near-identical record vectors would crowd semantic
+results and cost memory without adding meaning. Documents record `n_embedded` and
+`text_truncated`; search hits carry a `coverage` note when either applies, `/stats` counts them
+and `/errors` lists truncations under stage `limit`. Secret screening covers the whole text.
+
+Measured worst case for one 50 MB text in the service process: cleaning 0.2 s, secret
+screening 8 to 10 s, chunking 1 to 2 s (the oversized-block splitter was quadratic, 78 s, until
+it stopped re-slicing). Embedding a fully embedded 50 MB text file means ~45,000 chunks, which
+the indexer runs on the bulk device.
+
+When the coverage settings change, only documents they can affect are re-extracted: those cut
+by the previous ceilings and long files of a format whose embedding limit changed. The
+upgrade from 0.4.0 therefore re-extracts the documents that hit its old caps (2 million
+characters / 400 chunks) and nothing else.
+
 ## Storage
 
 One SQLite file (`<data_dir>/semsearch.db`, WAL mode):

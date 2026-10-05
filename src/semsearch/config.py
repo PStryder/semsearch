@@ -90,12 +90,21 @@ class EmbeddingConfig(BaseModel):
     on_model_change: Literal["reembed", "refuse"] = "reembed"
 
 
+DEFAULT_DATA_EXTENSIONS = [".json", ".jsonl", ".ndjson", ".csv", ".tsv", ".log", ".html", ".htm", ".xml"]
+
+
 class ChunkingConfig(BaseModel):
     target_chars: int = 1400
     max_chars: int = 2200
     overlap_chars: int = 180
     min_chars: int = 40
-    max_chunks_per_doc: int = 400
+    # Every chunk of a document goes into the full-text index (bounded by indexing.max_text_chars
+    # and this safety ceiling). Embeddings: prose and code in full; the formats below (data
+    # dumps, logs, generated markup) only for their first `embed_chunks_data` chunks, beyond
+    # which they are searchable literally but not semantically.
+    max_chunks_per_doc: int = 100_000
+    embed_chunks_data: int = 2000
+    data_extensions: list[str] = Field(default_factory=lambda: list(DEFAULT_DATA_EXTENSIONS))
 
 
 class ApiConfig(BaseModel):
@@ -120,7 +129,7 @@ class IndexingConfig(BaseModel):
     reconcile_interval_s: float = 3600.0
     auto_start: bool = True
     max_file_bytes: int = 50 * 1024 * 1024
-    max_text_chars: int = 2_000_000
+    max_text_chars: int = 50_000_000  # matches max_file_bytes: text beyond it is not indexed (flagged per document)
     max_expanded_bytes: int = 512 * 1024 * 1024  # Office containers whose members expand beyond this are not parsed
     extractor_memory_mb: int = 2048       # commit limit for the extractor child process (Windows job object); 0 = none
     follow_reparse_points: bool = False

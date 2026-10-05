@@ -70,12 +70,17 @@ embedding:
   threads: 0                            # onnxruntime intra-op threads, 0 = default
   on_model_change: reembed              # reembed | refuse
 
-chunking:                               # changing any of these re-extracts every document at the next start
+chunking:                               # changing the first four re-extracts every document at the next start
   target_chars: 1400                    # (the stored chunks no longer match what this configuration would produce)
   max_chars: 2200
   overlap_chars: 180
   min_chars: 40
-  max_chunks_per_doc: 400
+  # Coverage (changing these re-extracts only the documents they affect):
+  max_chunks_per_doc: 100000            # safety ceiling; every chunk up to it is in the full-text index
+  embed_chunks_data: 2000               # data formats get vectors for their first N chunks only ...
+  data_extensions: [.json, .jsonl, .ndjson, .csv, .tsv, .log, .html, .htm, .xml]
+                                        # ... the rest of such a file is searchable literally, not semantically;
+                                        # prose and code are embedded in full
 
 api:
   host: 127.0.0.1
@@ -92,7 +97,7 @@ indexing:
   reconcile_interval_s: 3600            # full enumeration diff (deletes) and tombstone purge
   auto_start: true                      # run a full build on first start if none was done
   max_file_bytes: 52428800              # 50 MB
-  max_text_chars: 2000000
+  max_text_chars: 50000000              # text beyond this is not indexed; the document is flagged (text_truncated)
   max_expanded_bytes: 536870912         # an Office container whose members would expand past this (512 MB) is not parsed
   extractor_memory_mb: 2048             # commit limit of the extractor child process (Windows job object); 0 = unlimited
   follow_reparse_points: false          # a root that is itself a junction/symlink is not walked unless this is true

@@ -83,6 +83,7 @@ class SearchHit:
     components: ScoreComponents
     why: list[str]
     doc_id: int
+    coverage: dict[str, Any] | None = None   # only for partially indexed documents
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -107,4 +108,5 @@ class SearchHit:
             },
             "why": self.why,
             "doc_id": self.doc_id,
+            **({"coverage": self.coverage} if self.coverage else {}),
         }

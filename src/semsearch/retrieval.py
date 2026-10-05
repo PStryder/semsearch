@@ -468,7 +468,24 @@ class Retriever:
             why.append(f"windows search rank {c.windows_rank:.3f}")
         return SearchHit(path=d["display_path"], filename=d["filename"], score=float(score), match_type=mt, excerpt=excerpt,
                          chunk_ordinal=ordinal, modified=d["mtime"], file_type=(d["extension"] or "").lstrip(".") or "file",
-                         size=d["size"], components=comps, why=why, doc_id=int(d["id"]))
+                         size=d["size"], components=comps, why=why, doc_id=int(d["id"]), coverage=self._coverage(d))
+
+    @staticmethod
+    def _coverage(d) -> dict[str, Any] | None:
+        keys = d.keys() if hasattr(d, "keys") else []
+        n_emb = d["n_embedded"] if "n_embedded" in keys else None
+        trunc = bool(d["text_truncated"]) if "text_truncated" in keys and d["text_truncated"] else False
+        partial = n_emb is not None and n_emb < (d["n_chunks"] or 0)
+        if not partial and not trunc:
+            return None
+        out: dict[str, Any] = {"chunks": d["n_chunks"]}
+        if partial:
+            out["embedded_chunks"] = n_emb
+            out["note"] = f"semantic search covers the first {n_emb:,} of {d['n_chunks']:,} chunks; all are searchable literally"
+        if trunc:
+            out["text_truncated"] = True
+            out["note"] = (out.get("note", "") + "; " if partial else "") + f"text beyond {d['text_chars']:,} characters is not indexed"
+        return out
 
     @staticmethod
     def _excerpt(text: str, terms: list[str], n: int) -> str:

@@ -26,7 +26,7 @@ import numpy as np
 from ..models import Chunk
 
 log = logging.getLogger(__name__)
-SCHEMA_VERSION = 2  # v2: documents.missing_since/title, jobs.dirty (additive; migrated in _migrate)
+SCHEMA_VERSION = 3  # v2: documents.missing_since/title, jobs.dirty; v3: documents.n_embedded/text_truncated (additive)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT);
@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS documents (
   last_seen REAL,
   source TEXT,
   missing_since REAL,
-  title TEXT
+  title TEXT,
+  n_embedded INTEGER,              -- chunks with a vector (NULL on rows written before v3: all of them)
+  text_truncated INTEGER DEFAULT 0 -- 1 when the text was cut at max_text_chars / max_chunks_per_doc
 );
 CREATE INDEX IF NOT EXISTS idx_documents_fileid ON documents(volume_serial, file_id);
 CREATE INDEX IF NOT EXISTS idx_documents_root ON documents(root);
@@ -377,7 +379,7 @@ class Store:
     def _migrate(self) -> None:
         """Add columns introduced after a database was created (CREATE IF NOT EXISTS skips them)."""
         have = {r[1] for r in self.conn.execute("PRAGMA table_info(documents)")}
-        for col, decl in (("missing_since", "REAL"), ("title", "TEXT")):
+        for col, decl in (("missing_since", "REAL"), ("title", "TEXT"), ("n_embedded", "INTEGER"), ("text_truncated", "INTEGER DEFAULT 0")):
             if col not in have:
                 self.conn.execute(f"ALTER TABLE documents ADD COLUMN {col} {decl}")
         have_jobs = {r[1] for r in self.conn.execute("PRAGMA table_info(jobs)")}
@@ -641,19 +643,22 @@ class Store:
                                     (doc_id, ch.ordinal, ch.start, ch.end, ch.text, text_hash(ch.for_embedding)))
             ids.append(int(cur.lastrowid))
         if vectors is not None and len(ids):
-            assert vectors.shape[0] == len(ids)
+            # vectors cover the FIRST len(vectors) chunks (data formats are embedded only for their
+            # first stretch); the rest are full-text only
+            assert vectors.shape[0] <= len(ids)
+            ids_v = ids[: vectors.shape[0]]
             if self._vec_table_exists():
                 # a leftover vector at a reused chunk id (crash, older versions) must not wedge indexing
-                for i in range(0, len(ids), 500):
-                    part = ids[i:i + 500]
+                for i in range(0, len(ids_v), 500):
+                    part = ids_v[i:i + 500]
                     orphan = [int(r[0]) for r in self.conn.execute(
                         f"SELECT rowid FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)]
                     if orphan:
                         self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(orphan))})", orphan)
                         tx.removed += orphan
-            for cid, v in zip(ids, vectors):
+            for cid, v in zip(ids_v, vectors):
                 self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))
-            tx.added.append((ids, vectors))
+            tx.added.append((ids_v, vectors))
         self.conn.execute("UPDATE documents SET n_chunks=?, embedding_fingerprint=? WHERE id=?",
                           (len(ids), fingerprint if vectors is not None else None, doc_id))
         return ids
@@ -687,7 +692,7 @@ class Store:
             # INTEGER PRIMARY KEY values); writing them would leave orphan vectors that collide
             # with every later chunk insert. Write nothing; the caller's job is moot.
             current = [int(r[0]) for r in self.conn.execute("SELECT id FROM chunks WHERE doc_id=? ORDER BY ordinal", (doc_id,))]
-            if sorted(current) != sorted(ids):
+            if current[: len(ids)] != ids:   # the document's chunks, in order (possibly a prefix)
                 raise StaleChunks(f"document {doc_id} changed while it was being re-embedded")
             for i in range(0, len(ids), 500):
                 part = ids[i:i + 500]
@@ -907,12 +912,15 @@ class Store:
         n_vec = int(c.execute("SELECT COUNT(*) FROM vec_chunks").fetchone()[0]) if self._vec_table_exists() else 0
         n_stale = int(c.execute("SELECT COUNT(*) FROM documents WHERE n_chunks>0 AND (embedding_fingerprint IS NULL OR embedding_fingerprint != ?)", (self.fingerprint,)).fetchone()[0]) if self.fingerprint else 0
         n_missing = int(c.execute("SELECT COUNT(*) FROM documents WHERE extract_status='missing'").fetchone()[0])
+        n_partial = int(c.execute("SELECT COUNT(*) FROM documents WHERE n_embedded IS NOT NULL AND n_embedded < n_chunks").fetchone()[0])
+        n_trunc = int(c.execute("SELECT COUNT(*) FROM documents WHERE text_truncated=1").fetchone()[0])
         try:
             size = os.path.getsize(self.path) + (os.path.getsize(self.path + "-wal") if os.path.exists(self.path + "-wal") else 0)
         except OSError:
             size = None
         return {
             "documents": n_docs, "chunks": n_chunks, "vectors": n_vec, "documents_awaiting_embedding": n_stale, "documents_missing": n_missing,
+            "documents_partially_embedded": n_partial, "documents_text_truncated": n_trunc,
             "by_extract_status": by_status, "by_extension": by_ext, "by_extract_method": by_method,
             "db_bytes": size, "embedding_fingerprint": self.fingerprint, "dim": self.dim,
             "vector_cache": None if self.cache is None else len(self.cache), "queue": self.queue_stats(),
@@ -952,6 +960,13 @@ class Store:
         finally:
             out.close()
         return {"path": dest, "bytes": os.path.getsize(dest), "seconds": round(time.perf_counter() - t0, 2)}
+
+    def invalidate_where(self, where_sql: str, params: Sequence = ()) -> int:
+        """invalidate_content for the documents matching a condition only."""
+        with self.lock, self._tx():
+            rows = self.conn.execute(f"SELECT path FROM documents WHERE extract_status != 'missing' AND ({where_sql})", list(params)).fetchall()
+            self.conn.execute(f"UPDATE documents SET content_hash='', mtime=NULL WHERE extract_status != 'missing' AND ({where_sql})", list(params))
+        return self.enqueue_many((r[0], "index", 5) for r in rows)
 
     def invalidate_content(self) -> int:
         """Force re-extraction of every present document: clear the stored hash and mtime so the

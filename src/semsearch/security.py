@@ -132,12 +132,13 @@ def _has_jwt(text: str) -> bool:
     return False
 
 
-def suspected_secret(text: str, max_scan_chars: int = 400_000) -> str | None:
+def suspected_secret(text: str, max_scan_chars: int | None = None) -> str | None:
     """Name of the first credential pattern found in text, or None. Deliberately conservative:
     the generic rule needs an assignment to a 24+ character opaque literal, so prose and
     ordinary code do not trip it. Every rule is linear in the input (tested on adversarial
     payloads): this runs in the service process, outside the extractor's timeout."""
-    sample = text[:max_scan_chars]
+    # the whole text by default: every chunk is indexed, so every chunk must be screened
+    sample = text if max_scan_chars is None else text[:max_scan_chars]
     for name, pat in _SECRET_PATTERNS:
         if name == "generic_assignment" and _has_jwt(sample):
             return "jwt"

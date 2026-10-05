@@ -884,19 +884,63 @@ class Indexer:
         parameters and the chunker/title algorithm version. A change re-extracts every document
         (the bytes have not changed, so the normal ladder would call them unchanged)."""
         c = self.cfg.chunking
-        s = f"v{PREPROCESS_VERSION}:{c.target_chars}:{c.max_chars}:{c.overlap_chars}:{c.min_chars}:{c.max_chunks_per_doc}"
-        return s
+        return f"v{PREPROCESS_VERSION}:{c.target_chars}:{c.max_chars}:{c.overlap_chars}:{c.min_chars}"
+
+    def coverage_id(self) -> str:
+        """How much of a document is indexed: the text and chunk ceilings and the embedding
+        limit for data formats. A change re-extracts only documents it can affect."""
+        c, i = self.cfg.chunking, self.cfg.indexing
+        return f"{i.max_text_chars}:{c.max_chunks_per_doc}:{c.embed_chunks_data}:{','.join(sorted(e.lower() for e in c.data_extensions))}"
+
+    LEGACY_COVERAGE = (2_000_000, 400)   # what 0.4.0 and earlier enforced: 2M characters, 400 chunks, all embedded
+
+    def _check_coverage(self) -> int:
+        want = self.coverage_id()
+        have = self.store.get_meta("policy:coverage")
+        if have == want:
+            return 0
+        if have is None:
+            old_text, old_chunks = self.LEGACY_COVERAGE
+            old_limit, old_data = old_chunks, set()
+        else:
+            parts = have.split(":", 3)
+            old_text, old_chunks, old_limit = int(parts[0]), int(parts[1]), int(parts[2])
+            old_data = set(filter(None, parts[3].split(","))) if len(parts) > 3 else set()
+        c = self.cfg.chunking
+        new_data = {e.lower() for e in c.data_extensions}
+        # affected: documents cut by the old ceilings, and documents of a format whose embedding
+        # limit or data/prose status changed and that are long enough for it to matter
+        conds = ["text_truncated = 1", "text_chars >= ?", "n_chunks >= ?"]
+        params: list = [old_text, old_chunks]
+        changed_exts = old_data ^ new_data
+        if changed_exts:
+            conds.append(f"(extension IN ({','.join('?' * len(changed_exts))}) AND n_chunks > ?)")
+            params += sorted(changed_exts) + [min(old_limit, c.embed_chunks_data)]
+        if old_limit != c.embed_chunks_data and new_data:
+            conds.append(f"(extension IN ({','.join('?' * len(new_data))}) AND n_chunks > ?)")
+            params += sorted(new_data) + [min(old_limit, c.embed_chunks_data)]
+        n = self.store.invalidate_where(" OR ".join(conds), params)
+        if n:
+            log.warning("indexing coverage changed (%s -> %s): %d affected documents will be re-extracted", have or "legacy", want, n)
+        self.store.set_meta("policy:coverage", want)
+        return n
 
     def _check_preprocess_version(self) -> int:
         want = self.preprocess_id()
         have = self.store.get_meta("policy:preprocess")
+        if have is not None and have != want and have.rsplit(":", 1)[0] == want:
+            # pre-0.5 identities carried the chunk ceiling as a sixth field; that is coverage
+            # now (handled by _check_coverage, which re-extracts only what it affects)
+            self.store.set_meta("policy:preprocess", want)
+            have = want
         if have == want:
-            return 0
+            return self._check_coverage()
         n = 0
         if have is not None:
             log.warning("chunking/preprocessing changed (%s -> %s): every document will be re-extracted", have, want)
             n = self.store.invalidate_content()
         self.store.set_meta("policy:preprocess", want)
+        self.store.set_meta("policy:coverage", self.coverage_id())   # everything was just re-queued
         return n
 
     def _index_file(self, path_norm: str) -> str:
@@ -1041,17 +1085,37 @@ class Indexer:
         title = derive_title(res.text, disp)
         fields["title"] = title
         apply_title(chunks, title)
+        # every chunk goes into the full-text index; prose and code are embedded in full, data
+        # formats only for their first stretch (thousands of near-identical vectors from a JSON
+        # dump would crowd semantic results and cost RAM without adding meaning)
+        n_embed = self.embed_count(ext, len(chunks))
+        truncated = bool(res.meta.get("truncated")) or len(res.text) >= self.cfg.indexing.max_text_chars \
+            or len(chunks) >= self.cfg.chunking.max_chunks_per_doc
+        fields["n_embedded"] = n_embed
+        fields["text_truncated"] = int(truncated)
+        if n_embed >= 1000:
+            self._set_bulk(not self._bulk_gpu_busy_elsewhere())   # a very long document is bulk work
         # embed BEFORE touching the document row: if this raises, the previous version stays
         # intact and searchable, and the retry sees the old stat/hash so it re-extracts
-        vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks)
+        vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks[:n_embed])
         self.state.embed_ms += embed_ms
         doc_id = self.store.write_document(fields, chunks, vectors, self.fingerprint)
+        if truncated:
+            self.store.record_error(disp, "limit", f"text cut at {len(res.text):,} characters / {len(chunks):,} chunks "
+                                                   f"(indexing.max_text_chars, chunking.max_chunks_per_doc): the rest is not searchable")
         self.state.docs_indexed += 1
         self.state.chunks_embedded += n_new
         self.state.chunks_reused += n_reused
         self.state.recent.append((time.time(), 1, len(chunks)))
         log.debug("indexed %s: %d chunks (%d embedded, %d reused) extract %.0fms embed %.0fms", disp, len(chunks), n_new, n_reused, extract_ms, embed_ms)
         return "indexed"
+
+    def embed_count(self, ext: str, n_chunks: int) -> int:
+        """How many of a document's chunks get a vector (the rest are full-text only)."""
+        data = {e.lower() for e in self.cfg.chunking.data_extensions}
+        if (ext or "").lower() in data:
+            return min(n_chunks, self.cfg.chunking.embed_chunks_data)
+        return n_chunks
 
     def _embed_chunks(self, chunks) -> tuple[np.ndarray, int, int, float]:
         t0 = time.perf_counter()
@@ -1099,6 +1163,8 @@ class Indexer:
         if not chunks_rows:
             return "no_chunks"
         from .models import Chunk
+        n_embed = self.embed_count(row["extension"] or "", len(chunks_rows))
+        chunks_rows = chunks_rows[:n_embed]
         chunks = [Chunk(int(c["ordinal"]), int(c["start"]), int(c["end"]), c["text"]) for c in chunks_rows]
         apply_title(chunks, row["title"] or derive_title("", row["display_path"]))
         vectors, n_new, n_reused, embed_ms = self._embed_chunks(chunks)

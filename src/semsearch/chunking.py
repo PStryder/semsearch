@@ -86,16 +86,21 @@ def _split_long(b: _Block, max_chars: int) -> list[_Block]:
         if idx < 0:
             idx = off
         off = idx + len(piece)
-        while len(piece) > max_chars:
-            cut = piece.rfind(" ", 0, max_chars)
+        # walk an oversized piece with an index: re-slicing the remainder after every cut copied
+        # megabytes per cut, which made a 14 MB JSON (one "sentence") take 7 s and 50 MB 78 s
+        p0 = 0
+        while len(piece) - p0 > max_chars:
+            cut = piece.rfind(" ", p0, p0 + max_chars) - p0
             if cut < max_chars // 2:
                 cut = max_chars
             if buf:
                 out.append(_Block(buf_start, buf_start + len(buf), buf))
                 buf = ""
-            out.append(_Block(b.start + idx, b.start + idx + cut, piece[:cut]))
-            piece = piece[cut:]
+            out.append(_Block(b.start + idx, b.start + idx + cut, piece[p0:p0 + cut]))
+            p0 += cut
             idx += cut
+        if p0:
+            piece = piece[p0:]
         if buf and len(buf) + 1 + len(piece) > max_chars:
             out.append(_Block(buf_start, buf_start + len(buf), buf))
             buf = ""

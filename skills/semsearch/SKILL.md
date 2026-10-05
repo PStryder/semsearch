@@ -56,6 +56,9 @@ Try two phrasings if the first top-5 looks wrong; queries cost 10 to 300 ms.
 - `excerpt`: the best-matching chunk, windowed around the first matching term
 - `chunk_ordinal`: which chunk of the file matched (chunks are ~1400 characters in document order)
 - `duplicates`: other paths holding byte-identical content (shown once; every copy is still indexed)
+- `coverage` (only on partially indexed files): large data files (JSON, CSV, logs, HTML, XML) are
+  searchable literally throughout but semantically only in their first ~2,000 chunks; when a hit says so
+  and you are looking for a concept deep inside such a file, search again with `--literal` and specific terms
 - `--root` / `--ext` filters are applied while candidates are collected, so a narrow folder or
   type is never crowded out by a popular one; use them freely
 - `why`: human-readable reasons
