@@ -107,6 +107,8 @@ periodic reconcile --------+   (isolated child)     +--> ONNX embeddings -----+
 - Files that look like they contain credentials (keys, tokens, `.env`) are skipped by default.
 - One SQLite database holds everything; the API listens on `127.0.0.1` only.
 
+Working on the code (or pointing a coding agent at it)? Read [AGENTS.md](AGENTS.md) first.
+
 Details: [architecture](docs/architecture.md) · [configuration](docs/configuration.md) ·
 [HTTP API](docs/api.md) · [operations](docs/operations.md) ·
 [Windows service internals](docs/windows-service.md) · [what Windows Search can and cannot do](docs/windows-search-findings.md)

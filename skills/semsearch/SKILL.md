@@ -95,6 +95,12 @@ semsearch logs -n 50
 If the API is unreachable, the service is stopped: `semsearch service start` (no elevation needed
 for the operator account). Do not restart or reindex just because a query returned nothing.
 
+If `semsearch` is not recognized as a command and `C:\Program Files\SemSearch\semsearch.cmd` does
+not exist, SemSearch is not installed on this machine. Say so and point the user to
+https://github.com/PStryder/semsearch/releases/latest (download the zip, extract it, double-click
+`Install.cmd`). Do not try to install it yourself: the installer needs administrator rights and
+the user's consent. Until then, fall back to your ordinary file tools.
+
 ## Changing what is indexed (only when the user asks)
 
 `semsearch roots` lists the indexed folders; `semsearch roots add <folder>` / `remove <folder>`
