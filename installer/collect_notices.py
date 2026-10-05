@@ -7,9 +7,9 @@ Writes:
                             interpreter's own licence and any extra notice files found under
                             site-packages (DirectML, ONNX Runtime third-party notices, ...)
   sbom.json                 CycloneDX 1.5 JSON: one component per distribution (purl, version,
-                            licence expression, file hashes of the dist-info RECORD) and one for
-                            the interpreter and the embedding model (from model-manifest.json
-                            when present)
+                            licence), one for the interpreter, DirectML (with its SHA-256) and the
+                            embedding model (with every file's SHA-256, from model-manifest.json).
+                            Per-file hashes of everything shipped are in release-manifest.json.
 Nothing here is legal advice: it is the inventory a human reviews.
 """
 from __future__ import annotations
@@ -113,12 +113,37 @@ def main(out_dir: str) -> int:
         for p in sorted(extra):
             lines += [f"--- {os.path.relpath(p, site)} ---", open(p, encoding="utf-8", errors="replace").read().rstrip(), ""]
     # native binaries that ride inside a wheel under terms the wheel does not carry as a file
+    # DirectML.dll ships inside the onnxruntime-directml wheel WITHOUT its licence texts; they are
+    # vendored from the Microsoft.AI.DirectML NuGet package of the exact same version
+    # (installer/notices/directml-<version>/). A different DLL version stops the build until the
+    # matching texts are added.
+    dml_version = None
+    if site:
+        dml = os.path.join(site, "onnxruntime", "capi", "DirectML.dll")
+        if os.path.isfile(dml):
+            try:
+                import win32api
+                vi = win32api.GetFileVersionInfo(dml, chr(92))
+                ms, ls = vi["FileVersionMS"], vi["FileVersionLS"]
+                dml_version = f"{ms >> 16}.{ms & 0xffff}.{ls >> 16}"
+            except Exception as e:  # noqa: BLE001
+                raise SystemExit(f"cannot read the DirectML.dll version: {e}")
+    dml_texts = ""
+    if dml_version:
+        ndir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "notices", f"directml-{dml_version}")
+        if not os.path.isdir(ndir):
+            raise SystemExit(f"DirectML {dml_version} is bundled but installer/notices/directml-{dml_version}/ is missing: "
+                             f"copy LICENSE.txt, LICENSE-CODE.txt and ThirdPartyNotices.txt from the Microsoft.AI.DirectML "
+                             f"{dml_version} NuGet package")
+        for name in ("LICENSE.txt", "LICENSE-CODE.txt", "ThirdPartyNotices.txt"):
+            with open(os.path.join(ndir, name), encoding="utf-8-sig") as f:
+                dml_texts += f"--- Microsoft.AI.DirectML {dml_version}: {name} ---\n" + f.read().rstrip() + "\n\n"
     known_native = [
-        ("onnxruntime/capi/DirectML.dll", "Microsoft DirectML redistributable",
-         "Shipped inside the onnxruntime-directml wheel. Governed by the Microsoft DirectML licence (the LICENSE.txt of the "
-         "Microsoft.AI.DirectML NuGet package, https://www.nuget.org/packages/Microsoft.AI.DirectML), which permits "
-         "redistribution with an application; it is NOT MIT and is not the ONNX Runtime licence. Review that text before "
-         "a public release; it is not reproduced here because the wheel does not include it."),
+        ("onnxruntime/capi/DirectML.dll", f"Microsoft DirectML {dml_version or ''}".strip(),
+         "Shipped inside the onnxruntime-directml wheel. Governed by the MICROSOFT SOFTWARE LICENSE TERMS for DirectML "
+         "(reproduced below from the Microsoft.AI.DirectML NuGet package of the same version): redistribution is permitted "
+         "within applications built with machine-learning frameworks that run on Windows. Note section 2 of those terms: "
+         "the DirectML library itself may collect usage data and send it to Microsoft."),
     ]
     found_native = []
     if site:
@@ -129,11 +154,11 @@ def main(out_dir: str) -> int:
     if found_native:
         lines += ["=" * 78, "NATIVE BINARIES WITH SEPARATE TERMS (no licence file inside the wheel)", "=" * 78]
         for rel, title, note, digest, size in found_native:
-            lines += [f"--- {rel} ({title}; {size} bytes; sha256 {digest}) ---", note, ""]
+            lines += [f"--- {rel} ({title}; {size} bytes; sha256 {digest}) ---", note, "", dml_texts]
             comps.append({"type": "library", "name": title, "version": "bundled",
                           "hashes": [{"alg": "SHA-256", "content": digest}],
-                          "licenses": [{"license": {"name": "Microsoft DirectML licence (see notes)"}}],
-                          "properties": [{"name": "semsearch:path", "value": rel}, {"name": "semsearch:review-required", "value": "true"}]})
+                          "licenses": [{"license": {"name": "Microsoft Software License Terms: DirectML"}}],
+                          "properties": [{"name": "semsearch:path", "value": rel}]})
     # model
     mm = os.path.join(out_dir, "model-manifest.json")
     if os.path.isfile(mm):

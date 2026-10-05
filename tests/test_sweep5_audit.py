@@ -583,3 +583,100 @@ def test_ifilter_releases_its_stream(monkeypatch, tmp_path):
     monkeypatch.setattr(ex, "_extract", lambda path, ext, holder: (holder.append(FakeFlt()), "result")[1])
     assert ex.extract(str(tmp_path / "x.pdf"), ".pdf") == "result"
     assert released == ["STREAM"]
+
+
+# ---------------------------------------------------------------- event log redaction
+
+def test_event_log_text_carries_no_paths():
+    from semsearch.service import _redact_paths
+    s = "job C:\\Users\\alice\\Private\\diary.md failed; also \\\\srv\\share\\x.pdf and F:/HexyLab/a.txt and //srv/s/y"
+    out = _redact_paths(s)
+    assert "alice" not in out and "srv" not in out and "HexyLab" not in out
+    assert out.count("<path>") == 4 and out.startswith("job <path> failed")
+
+
+def test_event_log_handler_only_takes_errors():
+    import logging
+    from semsearch.service import _event_log_handler
+    h = _event_log_handler("SemSearch")
+    if h is None:
+        pytest.skip("servicemanager unavailable")
+    assert h.level == logging.ERROR
+
+
+# ---------------------------------------------------------------- release manifest covers the whole stage
+
+def test_release_manifest_detects_a_tampered_script_outside_python(tmp_path):
+    import subprocess
+    stage = tmp_path / "stage"
+    (stage / "python").mkdir(parents=True)
+    (stage / "python" / "a.py").write_text("x")
+    (stage / "install.ps1").write_text("original")
+    (stage / "VERSION").write_text("1")
+    tool = os.path.join(os.path.dirname(__file__), "..", "installer", "release_manifest.py")
+    py = sys.executable
+    assert subprocess.run([py, tool, "write", str(stage)], capture_output=True).returncode == 0
+    assert subprocess.run([py, tool, "verify", str(stage), str(stage / "release-manifest.json")], capture_output=True).returncode == 0
+    (stage / "install.ps1").write_text("tampered")
+    assert subprocess.run([py, tool, "verify", str(stage), str(stage / "release-manifest.json")], capture_output=True).returncode != 0
+
+
+def test_installer_verifies_the_whole_release_not_only_python():
+    src = open(os.path.join(os.path.dirname(__file__), "..", "installer", "install.ps1"), encoding="utf-8").read()
+    first = src[src.index("verifying the release"):src.index("transactional section")]
+    assert 'release_manifest.py" verify "$src" ' in first and "--subdir" not in first
+
+
+# ---------------------------------------------------------------- installer safety rules exist where they must
+
+def test_installer_scripts_never_use_recursive_remove_item():
+    """Windows PowerShell 5.1's Remove-Item -Recurse follows junctions into their targets."""
+    base = os.path.join(os.path.dirname(__file__), "..", "installer")
+    for name in ("install.ps1", "uninstall.ps1"):
+        code = [ln for ln in open(os.path.join(base, name), encoding="utf-8") if not ln.lstrip().startswith("#")]
+        assert not any("Remove-Item -Recurse" in ln for ln in code), name
+
+
+def test_installer_checks_data_dir_ownership_before_touching_the_machine():
+    src = open(os.path.join(os.path.dirname(__file__), "..", "installer", "install.ps1"), encoding="utf-8").read()
+    assert src.index("Assert-OwnedDataDir $DataDir") < src.index("stopping existing service")
+    assert "-Operator explicitly" in src and "not a per-service virtual account" in src
+
+
+def test_model_licence_text_is_reproduced_in_full():
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), "..", "installer", "model_manifest.py")
+    spec = importlib.util.spec_from_file_location("model_manifest", path)
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    t = m.MIT_FLAGEMBEDDING
+    assert "Copyright (c) 2022 staoxiao" in t and "Permission is hereby granted" in t and "THE SOFTWARE IS PROVIDED \"AS IS\"" in t
+
+
+# ---------------------------------------------------------------- licence notices
+
+def test_directml_licence_texts_are_vendored_for_the_bundled_version():
+    import onnxruntime
+    dll = os.path.join(os.path.dirname(onnxruntime.__file__), "capi", "DirectML.dll")
+    if not os.path.isfile(dll):
+        pytest.skip("not the DirectML build of onnxruntime")
+    import win32api
+    vi = win32api.GetFileVersionInfo(dll, chr(92))
+    ver = f"{vi['FileVersionMS'] >> 16}.{vi['FileVersionMS'] & 0xffff}.{vi['FileVersionLS'] >> 16}"
+    d = os.path.join(os.path.dirname(__file__), "..", "installer", "notices", f"directml-{ver}")
+    for name in ("LICENSE.txt", "LICENSE-CODE.txt", "ThirdPartyNotices.txt"):
+        assert os.path.getsize(os.path.join(d, name)) > 500, name
+    assert "DIRECTML" in open(os.path.join(d, "LICENSE.txt"), encoding="utf-8-sig").read().upper()
+
+
+def test_tray_never_startfiles_a_non_directory(tmp_path, monkeypatch, cfg):
+    import semsearch.tray as tray
+    started, warned = [], []
+    monkeypatch.setattr(os, "startfile", lambda p: started.append(p), raising=False)
+    exe = tmp_path / "payload.exe"
+    exe.write_bytes(b"MZ")
+    cfg.log_dir_override = exe
+    t = tray.TrayApp(cfg)
+    monkeypatch.setattr(t, "message", lambda *a, **k: warned.append(a))
+    t.open_logs()
+    assert started == [] and warned

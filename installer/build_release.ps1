@@ -52,10 +52,16 @@ if ($LASTEXITCODE -ne 0) { throw "pip install of the locked requirement set fail
 if ($LASTEXITCODE -ne 0) { throw "pip install of the semsearch wheel failed" }
 
 "[5/9] pruning the runtime (test suite, IDLE, Tk: not used by the service)"
-foreach ($rel in @("Lib\test", "Lib\idlelib", "Lib\turtledemo", "Lib\tkinter", "tcl", "DLLs\_tkinter.pyd", "DLLs\tcl86t.dll", "DLLs\tk86t.dll")) {
+# pip is needed to build the runtime, never to run it: it would be an installer of code inside
+# the service's runtime, and it shows up in the SBOM
+foreach ($rel in @("Lib\test", "Lib\idlelib", "Lib\turtledemo", "Lib\tkinter", "tcl", "DLLs\_tkinter.pyd", "DLLs\tcl86t.dll", "DLLs\tk86t.dll",
+                   "DLLs\_testcapi.pyd", "DLLs\_testclinic.pyd", "DLLs\_testinternalcapi.pyd", "DLLs\_testbuffer.pyd", "DLLs\_testimportmultiple.pyd",
+                   "DLLs\_testmultiphase.pyd", "DLLs\_testsinglephase.pyd", "DLLs\_testconsole.pyd", "Lib\ensurepip")) {
   $p = Join-Path $pyDir $rel
   if (Test-Path $p) { Remove-Item -Recurse -Force $p }
 }
+Get-ChildItem (Join-Path $pyDir "Lib\site-packages") -Directory | Where-Object { $_.Name -match '^pip(-[0-9].*\.dist-info)?$' } | Remove-Item -Recurse -Force
+Get-ChildItem (Join-Path $pyDir "Scripts") -Filter "pip*.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
 Get-ChildItem $pyDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 # byte-compile once here: %ProgramFiles% is read-only for the service account, so it could not do it later
 & $base -s -m compileall -q -j 0 (Join-Path $pyDir "Lib") | Out-Null

@@ -176,11 +176,16 @@ installer was told to use) and stores the extracted text in its index. The API a
 process on the loopback interface; callers are not impersonated and their NTFS rights are not
 checked against the source file. So: everything the service account can read, any local
 account can search, and a later ACL change on a file does not revoke what the index already
-holds. On a single-user workstation this is the intended design. On a machine with several
-interactive accounts, set `api.read_token: true` (reads then need the token file that only the
-operator can read) or give each user their own instance with their own data directory. The
-Windows Search security trimming described in docs/windows-service.md bounds what the service
-*sees*, not who may *ask*.
+holds. That is why every read needs a credential by default (`api.read_token: true`): the
+admin token file is readable by the operator only, and the settings page gets a tab-scoped
+session instead of the token. The Windows Search security trimming described in
+docs/windows-service.md bounds what the service *sees*, not who may *ask*.
+
+- The extractor child parses hostile documents and is treated as untrusted: its replies are
+  JSON bytes with a size cap, validated field by field (never unpickled, which would let a
+  parser exploit run code in the service)
+- The admin token rotates at every service start; clients send it only to the service's own
+  listening process (PID check) on a loopback address
 
 - API binds 127.0.0.1; a non-loopback bind requires `api.allow_non_loopback: true`
 - Every request's Host header must be a loopback name (or a configured `allowed_hosts` entry);
@@ -213,9 +218,12 @@ Windows Search security trimming described in docs/windows-service.md bounds wha
   file swapped between those opens is detected by a final stat (identity, size, mtime) and
   re-queued, which narrows but does not close that race to a single handle
 - Cloud/offline placeholder files are not recalled
-- No telemetry, no network calls except the one-time model download (a release bundles the
-  pinned model, so an installed service never reaches the network; disable downloads with
-  `embedding.allow_download: false`)
+- semsearch itself sends no telemetry and makes no network calls except the one-time model
+  download (a release bundles the pinned model, so an installed service does not need the
+  network; disable downloads with `embedding.allow_download: false`). One caveat outside
+  semsearch's control: the Microsoft DirectML library's licence (section 2, reproduced in
+  THIRD-PARTY-NOTICES.txt) states that it may collect usage data and send it to Microsoft. The
+  `cpu` build of the runtime does not include DirectML
 - Native extractors run in a child process with a timeout and, on Windows, inside a job object
   with a commit limit (`indexing.extractor_memory_mb`) that also kills the child with the
   service; Office containers are size-checked before parsing (`indexing.max_expanded_bytes`)

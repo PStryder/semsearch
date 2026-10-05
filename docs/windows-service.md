@@ -44,7 +44,7 @@ event log:
 | Priority | Below-normal process priority (`indexing.low_priority`) so background embedding never competes with foreground work |
 | GPU courtesy | While other processes keep the bulk GPU busier than `indexing.bulk_yield_gpu_percent` (read from the `GPU Engine` performance counters, attributed by adapter LUID and PID), bulk work stays on the steady-state device; `semsearch status` reports it |
 | Status | `semsearch status` / `GET /status` report version, PID, queue, counters, resolved devices, Windows Search catalog state, schema version and corruption recovery |
-| Event log | Lifecycle events (start, ready, stop, configuration errors, failures) and every WARNING+ log record go to the Application log under source `SemSearch`; detailed logs rotate in `%ProgramData%\SemSearch\logs` |
+| Event log | Lifecycle events (start, ready, stop, configuration errors, failures) and ERROR records go to the Application log under source `SemSearch`, with file paths replaced by `<path>` (that log is readable by every local account, and the names of documents are private too); detailed logs rotate in `%ProgramData%\SemSearch\logs` |
 
 ## Service identity
 
@@ -153,11 +153,21 @@ never needs a loaded user profile. Upgrades replace only `%ProgramFiles%\SemSear
 ACLs set by the installer: `%ProgramData%\SemSearch` is readable only by SYSTEM,
 Administrators, the service account (full control) and the operator account (read; write on
 `semsearch.yaml`). Extracted text lives in the index, so ordinary local users cannot read it
-from disk. They **can** query it through the loopback API unless `api.read_token: true` is set:
-the API does not impersonate callers, so what the service account may read, any local process
-may search. On a single-user workstation that is the design; on a shared machine turn
-`read_token` on (the token file is readable by the operator only) or run one instance per
-user. See "Security posture" in docs/architecture.md for the full statement of the boundary.
+from disk, and they cannot query it either: every API read needs the admin token (readable by
+the operator only) or a settings-page session minted from it (`api.read_token`, on by default).
+The API does not impersonate callers, so this token, not the caller's NTFS rights, is the
+boundary. See "Security posture" in docs/architecture.md.
+
+The installer refuses a data directory it did not create (one that exists but is not owned by
+Administrators/SYSTEM, or is a junction): any standard user can create folders under
+`%ProgramData%`, and a planted `SemSearch` folder with its own `semsearch.yaml` would otherwise
+make the elevated installer grant the service read access on whatever roots it named. The
+operator defaults to the account running the installer and the installer stops if a different
+user is at the console; a service identity other than the per-service virtual account is
+refused unless the operator is an administrator (the operator can edit the configuration the
+service obeys). Recursive deletes never follow junctions (Windows PowerShell 5.1's
+`Remove-Item -Recurse` does). The release manifest is verified over the whole release, not only
+the runtime.
 
 ## Accelerator resolution
 
@@ -366,10 +376,9 @@ so volumes are matched by the drive letter in the rule, with the letter required
 mounted and, when several ids share a letter (a removable-drive slot), the path required to
 exist.
 
-Search, health, status and stats are open to any local process on the loopback interface.
-Maintenance commands (`reindex`, `rebuild`, `remove`, `pause`, `resume`, `retry-failed`)
-send the token from `%ProgramData%\SemSearch\state\admin.token`; only the operator account,
-Administrators and the service can read it. Service control uses the service DACL the
+Every command sends the token from `%ProgramData%\SemSearch\state\admin.token` (rotated at
+each service start; only the operator account, Administrators and the service can read it),
+after checking that the listener on the port is the service process. Service control uses the service DACL the
 installer grants to the operator, so no elevation is needed.
 
 ## Upgrade

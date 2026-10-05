@@ -10,3 +10,11 @@ _probe/
 semsearch-pytest-review-*/
 dist/
 semsearch-*review*/
+
+# local configuration and service state never belong in the repository
+semsearch.yaml
+*.token
+state/
+logs/
+.env
+.env.*

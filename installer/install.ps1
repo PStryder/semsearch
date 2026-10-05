@@ -33,6 +33,27 @@ function Assert-SafeDir($p, $name) {
   return $full
 }
 function Inside($child, $parent) { return ($child + '\').StartsWith($parent + '\', [StringComparison]::OrdinalIgnoreCase) }
+function Is-Reparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; return ($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) }
+# Remove-Item -Recurse in Windows PowerShell 5.1 follows directory junctions and deletes the
+# TARGET's contents. Remove a link as a link; recurse only into real directories (rmdir /s does
+# not traverse junctions).
+function Remove-Tree($p) {
+  if (-not (Test-Path -LiteralPath $p)) { return }
+  if (Is-Reparse $p) { cmd /c rmdir "$p" | Out-Null; return }
+  cmd /c rmdir /s /q "$p" | Out-Null
+}
+# an existing data directory must belong to this machine's administrators: any standard user can
+# create folders under %ProgramData%, and a pre-planted SemSearch folder (with its own
+# semsearch.yaml naming roots) would turn this elevated installer into a grant oracle
+function Assert-OwnedDataDir($p) {
+  if (-not (Test-Path -LiteralPath $p)) { return }
+  if (Is-Reparse $p) { Fail "$p is a junction or symbolic link; refusing to install into it" }
+  $owner = (Get-Acl -LiteralPath $p).Owner
+  $trusted = @('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM', 'NT SERVICE\TrustedInstaller')
+  if ($trusted -notcontains $owner) {
+    Fail "$p already exists and is owned by '$owner', not by Administrators/SYSTEM. It was not created by this installer; inspect it, then remove it (or take ownership) before installing."
+  }
+}
 
 # ---- prerequisites ----
 $id = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -49,16 +70,38 @@ $os = Get-CimInstance Win32_OperatingSystem
 if ([int]$os.BuildNumber -lt 19041) { Fail "Windows 10 2004 / Windows 11 required (build $($os.BuildNumber))" }
 if ((Get-Service WSearch -ErrorAction SilentlyContinue).Status -ne 'Running') { Write-Warning "Windows Search service (WSearch) is not running; semsearch will fall back to filesystem walks" }
 if (-not $Operator) {
-  $Operator = (Get-CimInstance Win32_ComputerSystem).UserName   # the user who launched the elevated prompt
-  if (-not $Operator) { $Operator = $id.Name }
+  # The operator gets read access to the admin token and the index, modify on the config and
+  # service control. Default: the account running this elevated installer. If a DIFFERENT user is
+  # logged on at the console (installing over RDP or from a second session), do not guess: the
+  # console user would otherwise receive all of the above.
+  $console = (Get-CimInstance Win32_ComputerSystem).UserName
+  $Operator = $id.Name
+  if ($console -and ($console -ne $id.Name)) {
+    Fail "the console user ($console) is not the account running this installer ($($id.Name)); pass -Operator explicitly"
+  }
+}
+# a privileged service identity makes the operator-writable config a privilege boundary: refuse
+# that combination unless the operator is an administrator anyway
+if ($Account -notmatch '^NT SERVICE\\') {
+  $opIsAdmin = $false
+  try {
+    $opSid = (New-Object System.Security.Principal.NTAccount($Operator)).Translate([System.Security.Principal.SecurityIdentifier])
+    $admins = New-Object System.Security.Principal.SecurityIdentifier("S-1-5-32-544")
+    $opIsAdmin = [bool](Get-LocalGroupMember -SID $admins | Where-Object { $_.SID -eq $opSid })
+  } catch {}
+  if (-not $opIsAdmin) {
+    Fail "service account '$Account' is not a per-service virtual account: the operator ($Operator) could steer it through semsearch.yaml. Use the default NT SERVICE\SemSearch, or make the operator an administrator."
+  }
 }
 $svc = "SemSearch"
 Step "SemSearch $version -> $InstallDir  (data: $DataDir, service account: $Account, operator: $Operator)"
+Assert-OwnedDataDir $DataDir
+if ((Test-Path -LiteralPath $InstallDir) -and (Is-Reparse $InstallDir)) { Fail "$InstallDir is a junction or symbolic link; refusing" }
 
 # the source stage is verified BEFORE anything on the machine is touched
 Step "verifying the release (manifest + native dependencies)"
 if (Test-Path "$src\release-manifest.json") {
-  & $srcPy -s "$src\release_manifest.py" verify "$src\python" "$src\release-manifest.json" --subdir python; Native "release manifest verification"
+  & $srcPy -s "$src\release_manifest.py" verify "$src" "$src\release-manifest.json"; Native "release manifest verification (whole release)"
 }
 & $srcPy -s "$src\verify_runtime.py"; Native "release runtime verification"
 
@@ -68,7 +111,7 @@ function Rollback($why) {
   Write-Host "ERROR: $why" -ForegroundColor Red
   Write-Host "==> rolling back" -ForegroundColor Yellow
   $ErrorActionPreference = "Continue"
-  if ($script:newCopied -and (Test-Path $InstallDir)) { Remove-Item -Recurse -Force $InstallDir -ErrorAction SilentlyContinue }
+  if ($script:newCopied -and (Test-Path $InstallDir)) { Remove-Tree $InstallDir }
   if ($script:prevMoved -and (Test-Path "$InstallDir.previous")) { Rename-Item "$InstallDir.previous" $InstallDir -ErrorAction SilentlyContinue }
   if ($script:svcExisted) {
     sc.exe config $svc start= delayed-auto | Out-Null
@@ -107,7 +150,7 @@ try {
   Step "installing runtime"
   if (Test-Path $InstallDir) {
     $prev = "$InstallDir.previous"
-    if (Test-Path $prev) { Remove-Item -Recurse -Force $prev }
+    if (Test-Path $prev) { Remove-Tree $prev }
     # handles can linger a moment after a process is terminated: retry the rename briefly
     $renamed = $false
     for ($try = 0; $try -lt 10 -and -not $renamed; $try++) {
@@ -344,5 +387,5 @@ if ($trayTask) {
   try { Start-ScheduledTask -TaskName "SemSearch Tray" -ErrorAction Stop } catch { Write-Warning "tray not started ($_); it starts at the next logon, or now with: semsearch tray" }
 }
 Write-Host "`nSemSearch $version installed and running. Folders: tray icon > Folders, or: semsearch roots add <folder>" -ForegroundColor Green
-if (Test-Path "$InstallDir.previous") { Remove-Item -Recurse -Force "$InstallDir.previous" -ErrorAction SilentlyContinue }
+if (Test-Path "$InstallDir.previous") { Remove-Tree "$InstallDir.previous" }
 exit 0

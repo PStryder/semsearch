@@ -20,7 +20,8 @@ semsearch query "receipts constitutive" --ext md -n 10 --root F:\HexyLab\LV_Stac
 semsearch --json query "..."                           # machine-readable (preferred for agents); --json goes before the subcommand
 ```
 
-Or over HTTP (any local process; no token needed for search):
+Or over HTTP. Every read needs the admin token header (the `semsearch` command adds it by itself,
+after checking it is talking to the real service, so prefer the command):
 
 ```
 GET  http://127.0.0.1:8765/search?q=<url-encoded>&mode=hybrid&limit=10[&ext=md,pdf][&root=F:\HexyLab]
@@ -29,9 +30,9 @@ GET  http://127.0.0.1:8765/document?path=<full path>&chunks=true     # extracted
                                                                       # paged: &offset=0&limit=50 (chunk_count says how many)
 ```
 
-If the installation has `api.read_token: true` (shared machines), reads need the header
-`X-SemSearch-Token: <contents of %ProgramData%\SemSearch\state\admin.token>`; the `semsearch`
-command adds it by itself.
+Header: `X-SemSearch-Token: <contents of %ProgramData%\SemSearch\state\admin.token>`. The token
+changes at every service restart: read the file for each request, never cache it, and never
+put it in a URL or paste it anywhere.
 
 ## Choosing a mode
 

@@ -84,7 +84,7 @@ api:
   allowed_hosts: []                     # extra Host header values; loopback names are always allowed
   log_requests: false
   backup_dir: null                      # where POST /backup may write (default <data_dir>/backups); nowhere else
-  read_token: false                     # true on a SHARED machine: search/document/status/stats/errors need the admin token too
+  read_token: true                      # reads need the admin token or a settings-page session; false = any local process may search
 
 indexing:
   use_windows_search: true              # inventory + GatherTime deltas + FREETEXT when the root is indexed

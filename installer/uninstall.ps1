@@ -15,6 +15,14 @@ $id = [Security.Principal.WindowsIdentity]::GetCurrent()
 if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { Write-Host "run elevated"; exit 1 }
 $svc = "SemSearch"
 $problems = 0
+function Is-Reparse($p) { $i = Get-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue; return ($i -and ($i.Attributes -band [IO.FileAttributes]::ReparsePoint)) }
+# Windows PowerShell 5.1's Remove-Item -Recurse follows junctions into their targets: remove a link
+# as a link, and recurse only with rmdir /s, which does not traverse junctions
+function Remove-Tree($p) {
+  if (-not (Test-Path -LiteralPath $p)) { return }
+  if (Is-Reparse $p) { cmd /c rmdir "$p" | Out-Null; return }
+  cmd /c rmdir /s /q "$p" | Out-Null
+}
 function Note($m) { Write-Host "==> $m" }
 function Problem($m) { Write-Host "PROBLEM: $m" -ForegroundColor Yellow; $script:problems++ }
 
@@ -62,7 +70,7 @@ foreach ($r in $roots) {
 Note "removing binaries $InstallDir"
 foreach ($d in @($InstallDir, "$InstallDir.previous")) {
   if (Test-Path $d) {
-    Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
+    Remove-Tree $d
     if (Test-Path $d) { Problem "could not remove $d completely (a file is in use?); delete it after a reboot" }
   }
 }
@@ -71,13 +79,17 @@ $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
 [Environment]::SetEnvironmentVariable("Path", (($machinePath -split ';' | Where-Object { $_ -and ($_.TrimEnd('\') -ine $InstallDir) }) -join ';'), "Machine")
 if ($PurgeData) {
   if (-not (Test-Path $DataDir)) { Note "no data directory at $DataDir" }
+  elseif (Is-Reparse $DataDir) { Problem "$DataDir is a junction or symbolic link; not purging (remove the link yourself)" }
+  elseif (@('BUILTIN\Administrators', 'NT AUTHORITY\SYSTEM') -notcontains (Get-Acl -LiteralPath $DataDir).Owner) {
+    Problem "$DataDir is owned by '$((Get-Acl -LiteralPath $DataDir).Owner)', not by Administrators; not purging a directory this installer did not create"
+  }
   else {
     if (-not $Yes) {
       $a = Read-Host "Delete the index, configuration, state and logs under $DataDir? Type DELETE to confirm"
       if ($a -ne 'DELETE') { Write-Host "data kept at $DataDir"; exit 0 }
     }
     Note "deleting $DataDir"
-    Remove-Item -Recurse -Force $DataDir -ErrorAction SilentlyContinue
+    Remove-Tree $DataDir
     if (Test-Path $DataDir) { Problem "could not delete $DataDir completely" }
   }
 } else {

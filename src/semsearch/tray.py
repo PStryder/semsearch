@@ -137,7 +137,12 @@ class TrayApp:
         webbrowser.open(f"{self.base}/ui{frag}")
 
     def open_logs(self, *_):
-        os.startfile(str(self.cfg.log_dir))  # noqa: S606 - explorer on our own log directory
+        d = str(self.cfg.log_dir)
+        # startfile EXECUTES a file; the log path comes from the config, so only ever open a directory
+        if os.path.isdir(d) and not os.path.islink(d):
+            os.startfile(d)  # noqa: S606 - explorer on our own log directory
+        else:
+            self.message(f"log directory not found: {d}", kind="warn")
 
     def toggle_pause(self, *_):
         paused = bool(((self.status or {}).get("indexer") or {}).get("paused"))

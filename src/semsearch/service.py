@@ -219,6 +219,20 @@ def _single_instance_or_exit() -> object | None:
         return object()
 
 
+_PATH_RE = None
+
+
+def _redact_paths(s: str) -> str:
+    """Replace Windows paths (drive and UNC) with a placeholder: event-log text is readable by
+    every local account, and document paths are themselves private (names of other people's
+    files). The detailed log under the data directory keeps them."""
+    global _PATH_RE
+    if _PATH_RE is None:
+        import re
+        _PATH_RE = re.compile(r"(?i)(?:\b[a-z]:[\\/]|\\\\|//)[^\s'\"<>|*?]*")
+    return _PATH_RE.sub("<path>", s)
+
+
 def _event_log_handler(name: str) -> logging.Handler | None:
     try:
         import servicemanager
@@ -226,7 +240,8 @@ def _event_log_handler(name: str) -> logging.Handler | None:
         class EventLogHandler(logging.Handler):
             def emit(self, record):
                 try:
-                    msg = self.format(record)[:4000]
+                    # the Application log is readable by every local account: no file paths
+                    msg = _redact_paths(self.format(record))[:4000]
                     if record.levelno >= logging.ERROR:
                         servicemanager.LogErrorMsg(msg)
                     elif record.levelno >= logging.WARNING:
@@ -236,7 +251,7 @@ def _event_log_handler(name: str) -> logging.Handler | None:
                 except Exception:  # noqa: BLE001
                     pass
 
-        h = EventLogHandler(level=logging.WARNING)
+        h = EventLogHandler(level=logging.ERROR)
         h.setFormatter(logging.Formatter("%(name)s: %(message)s"))
         return h
     except Exception:  # noqa: BLE001

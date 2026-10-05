@@ -1,19 +1,32 @@
 # API
 
-Base URL: `http://127.0.0.1:8765` (configurable). JSON in, JSON out. Interactive docs at `/docs`.
+Base URL: `http://127.0.0.1:8765` (configurable). JSON in, JSON out. The service exposes no
+interactive docs or OpenAPI schema (`/docs` and `/openapi.json` are off).
 The API is loopback-only; nothing here can modify, move or delete a source file. Requests whose
 `Host` header is not a loopback name (or a configured `api.allowed_hosts` entry) are answered
 with **421** to defeat DNS rebinding from a browser.
 
-**Who can call what.** Maintenance endpoints (`/index/path`, `/remove/path`, `/reindex`,
-`/indexer/*`, `/backup`) require the admin token (`X-SemSearch-Token`, file
-`<state_dir>/admin.token`, readable by the operator account only). Read endpoints are open to
-every local process by default, which is the right trade-off on a single-user workstation and
-the wrong one on a machine with several interactive accounts: the index holds text the
-*service* account could read, and the API answers whoever asks on the loopback interface.
-Set `api.read_token: true` to require the same token for `/search`, `/document`, `/status`,
-`/stats` and `/errors` (`/health` stays open); the CLI sends it automatically when it can read
-the token file.
+**Who can call what.** Everything except `/health` and the static `/ui` page needs a
+credential, because the index holds text the *service* account could read and the API would
+otherwise hand it to any local process:
+
+| credential | how it is obtained | grants |
+|---|---|---|
+| admin token, header `X-SemSearch-Token` | `<state_dir>/admin.token`, readable by the operator account, Administrators and the service only; **rotated at every service start** | everything |
+| settings-page session, header `X-SemSearch-Session` | the tray calls `POST /ui/nonce` (admin token) and opens `/ui#n=<nonce>`; the page redeems the single-use, 60 s nonce at `POST /ui/redeem` and keeps the session in that tab's `sessionStorage` (12 h) | reads, and `POST /config/excludes`; nothing else (no roots, backups, wipes, maintenance or new nonces) |
+
+`api.read_token: false` reopens reads to every local process (only for a machine with a single
+interactive user). `/health` without a credential answers liveness only (`ok`, `version`).
+
+The CLI and the tray attach the admin token only after checking that the process listening on
+the configured loopback port **is the SemSearch service** (its PID from the Service Control
+Manager against the owner of the listening socket). A server named by a stray
+`semsearch.yaml`, or another account's process holding the port while the service restarts,
+never receives it. A `semsearch.yaml` in the current folder is ignored when the machine
+configuration exists.
+
+Limits: query 2,000 characters; at most 32 roots and 32 extensions per search; at most 1,000
+exclusion patterns of 512 characters; request bodies 1 MB, and POSTs need a Content-Length.
 
 ## POST /search
 
@@ -135,8 +148,10 @@ directory from the index immediately (the files themselves are untouched).
 
 | Endpoint | Auth | Effect |
 |---|---|---|
+| `POST /ui/nonce` | admin | single-use 60 s nonce for the settings page |
+| `POST /ui/redeem` `{"nonce": ...}` | none | trades a nonce for a tab session (see above) |
 | `GET /config` | read | `{config, roots, excludes, read_token, editable}` |
-| `POST /config/roots` `{"add": path}` / `{"remove": path}` / `{"set": [paths]}` | admin | change the indexed folders: persisted into the configuration file, applied live (watcher restarted, new root enumerated, out-of-scope documents removed in the background). A new folder must already be readable by the service account (400 if it does not exist, 403 if unreadable); `semsearch roots add` and the tray grant that first |
+| `POST /config/roots` `{"add": path}` / `{"remove": path}` / `{"set": [paths]}` | admin | change the indexed folders: persisted into the configuration file, applied live (watcher restarted, new root enumerated, out-of-scope documents removed in the background). Every folder the call ADDS must carry an explicit (not inherited) read grant for the service's account, which `semsearch roots add` and the tray place as the folder's owner: proof that someone with change-permission rights shared it. 400 if it does not exist, 403 without the grant; network and device paths are refused. Values with control characters are refused, and the file is only rewritten if it parses back to exactly the requested lists |
 | `POST /config/excludes` `{"excludes": [globs]}` | admin | replace the exclusion list, persisted and applied live |
 | `GET /config/windows-scope` | read | what the Windows Search indexer covers for content in the operator's profile and its exclusion rules, as semsearch roots/globs; read-only |
 | `GET /ui` | none | the settings page (HTML) |

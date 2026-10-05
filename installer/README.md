@@ -40,7 +40,8 @@ semsearch status | health | stats | logs
 semsearch service status | start | stop | restart
 ```
 
-On a machine shared by several interactive accounts, set `read_token: true` under `server:` in
-`%ProgramData%\SemSearch\semsearch.yaml` (every local process can otherwise search the index).
+Reads need the admin token by default (`read_token: true` under `server:`), so other local
+accounts cannot search the index. Only on a machine with a single interactive user may it be
+set to `false`.
 
 Full documentation: docs/windows-service.md in the source repository.

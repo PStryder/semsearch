@@ -18,6 +18,31 @@ import os
 import re
 import sys
 
+MIT_FLAGEMBEDDING = """MIT License
+
+Copyright (c) 2022 staoxiao
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+(Source: https://github.com/FlagOpen/FlagEmbedding/blob/master/LICENSE, linked from the
+BAAI/bge-small-en-v1.5 model card at the pinned revision, which declares `license: mit`.)
+"""
+
 PATTERNS = ["onnx/model.onnx", "tokenizer.json", "tokenizer_config.json", "config.json", "special_tokens_map.json",
             "README.md", "LICENSE", "LICENSE.md", "LICENSE.txt"]
 
@@ -75,9 +100,9 @@ def main() -> int:
             license_text = open(p, encoding="utf-8", errors="replace").read()
             break
     if not license_text and license_id == "MIT":
-        license_text = ("MIT License, as declared by the model card at the pinned revision (the card links "
-                        "https://github.com/FlagOpen/FlagEmbedding/blob/master/LICENSE; copyright 2022 staoxiao / BAAI). "
-                        "The model card (README.md) is bundled beside the model files.")
+        # the model card declares MIT and links FlagEmbedding's LICENSE; MIT requires the notice
+        # itself to travel with copies, so reproduce it in full (not a summary)
+        license_text = MIT_FLAGEMBEDDING
     manifest = {
         "repo": model, "revision": commit, "requested_revision": revision,
         "url": f"https://huggingface.co/{model}/tree/{commit}",
