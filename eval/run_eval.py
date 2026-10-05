@@ -51,6 +51,8 @@ def pct(x: float) -> str:
 
 def run(args) -> dict:
     cfg = Config(roots=[CORPUS], data_dir=os.path.join(HERE, "index_" + args.model.replace("/", "_")))
+    # the default excludes keep this corpus OUT of a live index; here it is the thing to index
+    cfg.excludes = [e for e in cfg.excludes if "semsearch/eval/" not in e]
     cfg.embedding.model = args.model
     cfg.embedding.provider = args.provider
     cfg.embedding.device = args.device
@@ -93,6 +95,9 @@ def run(args) -> dict:
                                "source": st.indexer.state.sources}
             print(f"indexed {stats['documents']} docs / {stats['chunks']} chunks in {dt_index:.0f}s "
                   f"({out['indexing']['docs_per_s']} docs/s, {out['indexing']['chunks_per_s']} chunks/s)")
+            if stats["chunks"] == 0:
+                # a zero-document index scores 0% everywhere and looks like a ranking failure
+                raise SystemExit("nothing was indexed: check that the corpus exists and is not excluded")
         else:
             out["indexing"] = {"reused": True, "documents": stats["documents"], "chunks": stats["chunks"]}
             print(f"reusing index: {stats['documents']} docs / {stats['chunks']} chunks")
