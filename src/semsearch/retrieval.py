@@ -186,6 +186,26 @@ class Retriever:
         out = [t for t in toks if t not in _STOP and len(t) > 1]
         return (out or toks)[: cls.MAX_TERMS]  # a pasted paragraph must not become a 500-term FTS expression
 
+    COMMON_FRACTION = 0.03   # a term in more than 3% of all chunks is "common"
+
+    def _or_terms(self, terms: list[str]) -> list[str]:
+        """Terms for the OR fallback, without the very common ones. Ranking an OR query scores
+        EVERY chunk that matches any term, so one frequent word ("year", "api") turns a 2 ms query
+        into 200 ms, while contributing almost nothing to BM25 (low IDF). Common terms are left
+        out as long as a rarer one remains; if every term is common, the two rarest are kept."""
+        if len(terms) <= 1:
+            return terms
+        total = self.store.chunk_count()
+        if total < 20000:
+            return terms   # small index: the full OR is cheap
+        df = {t: self.store.fts_count(self.fts_expr([t], True)) for t in terms}
+        limit = self.COMMON_FRACTION * total
+        rare = [t for t in terms if 0 < df[t] <= limit]
+        if rare:
+            return rare
+        present = sorted((t for t in terms if df[t] > 0), key=lambda t: df[t])
+        return present[:2] or terms
+
     def fts_expr(self, terms: list[str], conjunctive: bool) -> str:
         quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
         return (" AND " if conjunctive else " OR ").join(quoted)
@@ -228,7 +248,7 @@ class Retriever:
         if len(terms) > 1:
             rows = self.store.fts(self.fts_expr(terms, True), k_chunks, root_filter, ext_filter)
         if not rows:
-            rows = self.store.fts(self.fts_expr(terms, False), k_chunks, root_filter, ext_filter)
+            rows = self.store.fts(self.fts_expr(self._or_terms(terms), False), k_chunks, root_filter, ext_filter)
         best: dict[int, tuple[int, float]] = {}
         for chunk_id, doc_id, s in rows:
             if doc_id not in best or s > best[doc_id][1]:
@@ -277,12 +297,41 @@ class Retriever:
     # ---------- semantic ----------
     SEMANTIC_K_CAP = 50000
 
+    def _take_semantic_hits(self, hits, cands) -> None:
+        if not hits:
+            return
+        chunk_rows = self.store.get_chunks([cid for cid, _ in hits])
+        best: dict[int, tuple[int, float]] = {}
+        for cid, sim in hits:
+            r = chunk_rows.get(cid)
+            if r is None:
+                continue
+            doc_id = int(r["doc_id"])
+            if doc_id not in best or sim > best[doc_id][1]:
+                best[doc_id] = (cid, sim)
+        for doc_id, (cid, sim) in best.items():
+            c = cands.setdefault(doc_id, _Cand(doc_id))
+            c.semantic = float(max(0.0, min(1.0, sim)))
+            c.semantic_chunk = cid
+        self._assign_ranks(cands, "semantic")
+
     def _semantic(self, query: str, cands: dict[int, _Cand],
                   root_filter: list[str] | None = None, ext_filter: list[str] | None = None) -> None:
         rc = self.cfg.retrieval
         q = self.embedder.embed([query], "query")[0]
         k = rc.candidate_chunks
         filtered = bool(root_filter or ext_filter)
+        if filtered:
+            # rank only the chunks inside the filter: one SQL query for their ids, one matrix
+            # product over the in-memory vectors. (Widening a global top-k until the filter is
+            # satisfied took ~1 s on a 260k-chunk index for a narrow folder.)
+            allowed = self.store.chunk_ids_in(root_filter, ext_filter)
+            if len(allowed) == 0:
+                return
+            hits = self.store.knn(q, k, allowed)
+            if hits is not None:
+                self._take_semantic_hits(hits, cands)
+                return
         total = self.store.vector_count() if filtered else 0
         best: dict[int, tuple[int, float]] = {}
         while True:

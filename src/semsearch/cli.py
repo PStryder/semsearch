@@ -32,7 +32,7 @@ from . import __version__
 from .config import ConfigError, example_yaml, load_config, machine_config_path
 
 SUBCOMMANDS = {"query", "status", "health", "stats", "errors", "devices", "reindex", "rebuild", "remove", "pause", "resume",
-               "retry-failed", "logs", "service", "config", "version", "roots", "scope", "tray", "prune"}
+               "retry-failed", "logs", "service", "config", "version", "roots", "scope", "tray", "prune", "backup"}
 
 
 def _client(base: str, token: str | None = None):

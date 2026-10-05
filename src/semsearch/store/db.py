@@ -60,6 +60,8 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS idx_documents_fileid ON documents(volume_serial, file_id);
 CREATE INDEX IF NOT EXISTS idx_documents_root ON documents(root);
 CREATE INDEX IF NOT EXISTS idx_documents_filename ON documents(filename);
+-- covering index for filtered filename matching (LIKE '%x%' scans an index, never the table)
+CREATE INDEX IF NOT EXISTS idx_documents_name_ext_path ON documents(filename, extension, path, extract_status);
 CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(extract_status);
 CREATE INDEX IF NOT EXISTS idx_documents_fp ON documents(embedding_fingerprint);
 CREATE TABLE IF NOT EXISTS chunks (
@@ -221,7 +223,7 @@ class VectorCache:
     def __len__(self) -> int:
         return self.n - self.n_deleted
 
-    def search(self, q: np.ndarray, k: int) -> list[tuple[int, float]]:
+    def search(self, q: np.ndarray, k: int, allowed: np.ndarray | None = None) -> list[tuple[int, float]]:
         with self._lock:
             n = self.n
             if n == 0:
@@ -229,6 +231,16 @@ class VectorCache:
             sims = (self.mat[:n] @ np.asarray(q, dtype=self.dtype)).astype(np.float32)
             if self.n_deleted:
                 sims = np.where(self.deleted[:n], -2.0, sims)
+            if allowed is not None:
+                # a filtered search ranks only inside the filter: everything else scores -inf
+                keep = np.isin(self.ids[:n], allowed, assume_unique=False)
+                if self.n_deleted:
+                    keep &= ~self.deleted[:n]
+                count = int(keep.sum())
+                if count == 0:
+                    return []
+                sims = np.where(keep, sims, np.float32(-3.0))
+                k = min(k, count)
             k = min(k, n)
             idx = np.argpartition(-sims, k - 1)[:k]
             idx = idx[np.argsort(-sims[idx])]
@@ -690,8 +702,29 @@ class Store:
             tx.added.append((ids, vectors))
 
     # ---- search primitives ----
-    def knn(self, q: np.ndarray, k: int) -> list[tuple[int, float]]:
-        """Return [(chunk_id, cosine_similarity)] best first."""
+    def fts_count(self, match_expr: str) -> int:
+        """Number of chunks matching a full-text expression (no ranking: ~1 ms)."""
+        return int(self._r().execute("SELECT count(*) FROM chunks_fts WHERE chunks_fts MATCH ?", (match_expr,)).fetchone()[0])
+
+    def chunk_count(self) -> int:
+        if self.cache is not None:
+            return len(self.cache)
+        return int(self._r().execute("SELECT count(*) FROM chunks").fetchone()[0])
+
+    def chunk_ids_in(self, roots: Sequence[str] | None, extensions: Sequence[str] | None) -> np.ndarray:
+        """Ids of the chunks of live documents inside a root/extension filter."""
+        flt, params = self._doc_filter_sql(roots, extensions)
+        rows = self._r().execute(f"SELECT c.id FROM chunks c JOIN documents d ON d.id = c.doc_id "
+                                 f"WHERE d.extract_status != 'missing'{flt}", params).fetchall()
+        return np.fromiter((r[0] for r in rows), dtype=np.int64, count=len(rows))
+
+    def knn(self, q: np.ndarray, k: int, allowed: np.ndarray | None = None) -> list[tuple[int, float]]:
+        """Return [(chunk_id, cosine_similarity)] best first, optionally only among `allowed`
+        chunk ids (requires the in-memory cache; None when it is off, so the caller falls back)."""
+        if allowed is not None:
+            if self.cache is None:
+                return None  # type: ignore[return-value]
+            return self.cache.search(q, k, allowed)
         if self.cache is not None:
             return self.cache.search(q, k)
         if not self._vec_table_exists():
@@ -711,10 +744,13 @@ class Store:
         where: list[str] = []
         params: list = []
         if roots:
-            where.append("(" + " OR ".join(f"({alias}.path = ? OR {alias}.path LIKE ? ESCAPE '\\')" for _ in roots) + ")")
+            # an index range scan on documents.path (unique, normalized): every path under root r
+            # sorts in [r + "\\", r + "]") because "]" is the code point right after "\\".
+            # (LIKE cannot use the index: it is case-insensitive.)
+            where.append("(" + " OR ".join(f"({alias}.path = ? OR ({alias}.path >= ? AND {alias}.path < ?))" for _ in roots) + ")")
             for r in roots:
-                # escape the prefix INCLUDING its trailing separator, then the bare wildcard
-                params += [r, self._like_escape(r.rstrip("\\") + "\\") + "%"]
+                base = r.rstrip("\\")
+                params += [r, base + "\\", base + "]"]
         if extensions:
             exts = list(extensions)
             where.append(f"{alias}.extension IN ({','.join('?' * len(exts))})")

@@ -680,3 +680,81 @@ def test_tray_never_startfiles_a_non_directory(tmp_path, monkeypatch, cfg):
     monkeypatch.setattr(t, "message", lambda *a, **k: warned.append(a))
     t.open_logs()
     assert started == [] and warned
+
+
+# ---------------------------------------------------------------- CLI subcommand routing
+
+def test_every_cli_subparser_is_routed_as_a_subcommand():
+    """`semsearch backup x.db` fell through to the legacy flag parser because "backup" was not in
+    SUBCOMMANDS. Every subparser the CLI defines must be listed."""
+    import re
+    import semsearch.cli as cli
+    src = open(cli.__file__, encoding="utf-8").read()
+    defined = set(re.findall(r'sub\.add_parser\("([a-z-]+)"', src))
+    looped = re.search(r'for name in \(([^)]*)\):\s*\n\s*sp = sub\.add_parser\(name', src)
+    if looped:
+        defined |= set(re.findall(r'"([a-z-]+)"', looped.group(1)))
+    assert defined and defined <= cli.SUBCOMMANDS, defined - cli.SUBCOMMANDS
+
+
+def test_backup_subcommand_parses(monkeypatch, built, tmp_path, capsys):
+    import semsearch.cli as cli
+    monkeypatch.setattr(cli, "load_config", lambda *a, **k: built.cfg)
+    dest = tmp_path / "copy.db"
+    rc = cli.main(["backup", str(dest), "--direct"])
+    assert rc == 0 and dest.is_file() and "copy.db" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------- retrieval performance paths
+
+def test_or_fallback_drops_common_terms_on_a_large_index(built, root, monkeypatch):
+    """The pruning only engages above 20k chunks, which no test corpus reaches: simulate it."""
+    write(str(root / "rare.md"), "# zirconium\n\nzirconium appears here only\n")
+    built.indexer.index_path(str(root / "rare.md"))
+    drain(built)
+    monkeypatch.setattr(built.store, "chunk_count", lambda: 1_000_000)
+    real = built.store.fts_count
+    monkeypatch.setattr(built.store, "fts_count", lambda expr: 900_000 if "the" in expr.lower() and "zirc" not in expr else real(expr))
+    seen = []
+    real_fts = built.store.fts
+    monkeypatch.setattr(built.store, "fts", lambda expr, *a, **k: (seen.append(expr), real_fts(expr, *a, **k))[1])
+    res = built.retriever.search("zirconium theory", "literal", 5, cache=False)
+    assert seen[0] == '"zirconium" AND "theory"'                   # the AND attempt finds nothing ...
+    assert seen[-1] == '"zirconium"'                               # ... and the OR fallback kept only the rare term
+    assert res["results"][0]["filename"] == "rare.md"
+
+
+def test_or_fallback_keeps_the_two_rarest_when_all_terms_are_common(built, monkeypatch):
+    monkeypatch.setattr(built.store, "chunk_count", lambda: 1_000_000)
+    dfs = {'"alpha"': 900_000, '"beta"': 400_000, '"gamma"': 500_000}
+    monkeypatch.setattr(built.store, "fts_count", lambda expr: dfs.get(expr, 0))
+    assert built.retriever._or_terms(["alpha", "beta", "gamma"]) == ["beta", "gamma"]
+
+
+def test_masked_vector_search_ranks_only_inside_the_filter(store_factory):
+    import numpy as np
+    from semsearch.store.db import VectorCache
+    vc = VectorCache(4)
+    vc.add([1, 2, 3, 4], np.eye(4, dtype=np.float32))
+    q = np.array([1.0, 0.9, 0.0, 0.0], dtype=np.float32)
+    assert [i for i, _ in vc.search(q, 2)] == [1, 2]
+    assert {i for i, _ in vc.search(q, 2, allowed=np.array([3, 4, 99]))} == {3, 4}   # tied scores: order is free
+    vc.remove([3])
+    assert [i for i, _ in vc.search(q, 5, allowed=np.array([3, 4]))] == [4]
+    assert vc.search(q, 5, allowed=np.array([99])) == []
+
+
+def test_root_filter_uses_a_path_range_not_like(built, root):
+    flt, params = built.store._doc_filter_sql([str(root).lower()], None)
+    assert "LIKE" not in flt and ">=" in flt and params[2].endswith("]")
+
+
+def test_root_filter_excludes_sibling_folders_with_the_same_prefix(built, root):
+    write(str(root / "rare" / "inside.md"), "# inside\n\nkumquat in the folder\n")
+    write(str(root / "rare2" / "sibling.md"), "# sibling\n\nkumquat next door\n")
+    write(str(root / "rare]" / "bracket.md"), "# bracket\n\nkumquat behind the bracket\n")
+    built.indexer.index_path(str(root))
+    drain(built)
+    for mode in ("literal", "semantic", "hybrid"):
+        r = built.retriever.search("kumquat", mode, 10, roots=[str(root / "rare")], cache=False)
+        assert [h["filename"] for h in r["results"]] == ["inside.md"], mode
