@@ -137,7 +137,9 @@ try {
     # only the registered service process is ever killed (never other python processes on the machine)
     if ($svcPid -gt 0) {
       $p = Get-Process -Id $svcPid -ErrorAction SilentlyContinue
-      if ($p -and $p.ProcessName -match '^pythonw?$') { Stop-Process -Id $svcPid -Force -ErrorAction SilentlyContinue; Write-Host "service process $svcPid did not exit on stop; terminated" }
+      # the service reports STOPPED a moment before its process ends: give it time to exit by itself
+      if ($p) { $p.WaitForExit(10000) | Out-Null; $p = Get-Process -Id $svcPid -ErrorAction SilentlyContinue }
+      if ($p -and $p.ProcessName -match '^pythonw?$') { Stop-Process -Id $svcPid -Force -ErrorAction SilentlyContinue; Write-Host "service process $svcPid did not exit within 10 s of stopping; terminated" }
     }
   }
   # anything still executing out of the install directory (an orphaned extractor child of an older
@@ -373,7 +375,9 @@ $ErrorActionPreference = "Continue"
 Step "waiting for health"
 $ok = $false
 for ($i = 0; $i -lt 60; $i++) {
-  try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 5; if ($h.ok) { $ok = $true; break } } catch {}
+  # the token is rotated at service start: read it fresh (details in /health need it)
+  $hdr = @{}; try { $hdr = @{ "x-semsearch-token" = (Get-Content "$DataDir\state\admin.token" -ErrorAction Stop).Trim() } } catch {}
+  try { $h = Invoke-RestMethod "http://127.0.0.1:$Port/health" -Headers $hdr -TimeoutSec 5; if ($h.ok -and $h.documents -ne $null) { $ok = $true; break } } catch {}
   Start-Sleep 2
 }
 if (-not $ok) { Write-Host "service is running but /health did not answer; see $DataDir\logs\semsearch.log" -ForegroundColor Yellow; exit 2 }
