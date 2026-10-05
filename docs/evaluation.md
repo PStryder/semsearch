@@ -6,18 +6,23 @@ machine's own documents is yes on every metric, with hybrid as the default.
 
 ## Harness
 
-- `eval/corpus_manifest.yaml` + `eval/build_corpus.py` copy a corpus out of `F:\HexyLab`
+The numbers below come from the author's own documents. Those files, the labelled queries that
+name them and the per-query result files stay private (`eval/private/`, gitignored); the
+harness, the metrics and the aggregate results are public, and `eval/*.example.yaml` show the
+format for running the same evaluation on your own files.
+
+- `eval/private/corpus_manifest.yaml` + `eval/build_corpus.py` copy a corpus out of `F:\HexyLab`
   (sources are never modified; credential-looking filenames are skipped). Current corpus:
   976 files, 8,778 chunks: the loose documents at the top of HexyLab (.md/.txt/.docx/.pdf/.vtt),
   the Medium essay archive, project specs and READMEs, and ~700 source/config/data files as
   distractors.
-- `eval/queries.yaml`: 54 hand-labelled queries. `relevant` lists path substrings; the labels
+- `eval/private/queries.yaml`: 54 hand-labelled queries. `relevant` lists path substrings; the labels
   were written from the documents' content, and the *vague* queries deliberately avoid the
   documents' own title words (for example "my chatbot quoted a stale stock price for Palantir"
   → `2025-07-17_latency_of_drift.md`).
   - 42 **vague** (the target use case), 8 **exact** (a phrase or term that does occur), 4 **filename**.
 - `eval/run_eval.py` indexes the corpus with the configured provider, runs every query in all
-  three modes (cache bypassed, best of 3 timings), and writes `eval/results/<stamp>_<model>.{json,md}`.
+  three modes (cache bypassed, best of 3 timings), and writes `eval/private/results/<stamp>_<model>.{json,md}`.
 
 Metrics: **top-1** (rank-1 result is relevant), **recall@5** (relevant files found in the top 5
 over min(|relevant|, 5)), **MRR** (reciprocal rank of the first relevant result, 0 if beyond 20),

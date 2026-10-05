@@ -1,0 +1,13 @@
+# Files copied (never moved or modified) into eval/corpus so the evaluation is self-contained and
+# reproducible (format example; put your own manifest in eval/private/corpus_manifest.yaml, which
+# is gitignored). Paths are relative to `base`. Credential-looking file names are skipped.
+base: "C:/Users/you/Documents"
+max_per_pattern: 150
+patterns:
+  # the documents you actually go looking for
+  - { src: "notes/*.md", dest: "notes" }
+  - { src: "*.docx", dest: "root" }
+  - { src: "*.pdf", dest: "root" }
+  # distractors: source code, configs, data
+  - { src: "projects/**/*.py", dest: "code" }
+  - { src: "projects/**/*.json", dest: "data" }

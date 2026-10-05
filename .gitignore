@@ -18,3 +18,6 @@ state/
 logs/
 .env
 .env.*
+
+# the author's evaluation data names private documents: kept local (eval/*.example.yaml show the format)
+eval/private/

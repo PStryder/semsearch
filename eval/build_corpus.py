@@ -1,4 +1,4 @@
-"""Copy the evaluation corpus described by corpus_manifest.yaml into eval/corpus.
+"""Copy the evaluation corpus described by eval/private/corpus_manifest.yaml into eval/corpus.
 
 Read-only with respect to the sources (shutil.copy2, which preserves mtimes). Secrets are
 never copied: files whose names look like credentials are skipped by name pattern.
@@ -15,6 +15,18 @@ import yaml
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CORPUS = os.path.join(HERE, "corpus")
+# Labelled queries, the corpus manifest and results live in eval/private/ (gitignored: the author's
+# set names private documents). Without it, the *.example.yaml files here show the format.
+DATA = os.environ.get("SEMSEARCH_EVAL_DATA") or (os.path.join(HERE, "private") if os.path.isdir(os.path.join(HERE, "private")) else HERE)
+
+
+def data_file(name: str) -> str:
+    p = os.path.join(DATA, name)
+    if os.path.exists(p):
+        return p
+    ex = os.path.join(HERE, name.replace(".yaml", ".example.yaml"))
+    print(f"note: {p} not found; using the example {ex}", file=sys.stderr)
+    return ex
 SECRET_NAMES = ["*secret*", "*client_secret*", "*key*.txt", "*token*", "*.pem", "*.env", ".env*", "*credential*"]
 EXCLUDE_DIRS = {".venv", "venv", "node_modules", "__pycache__", ".git", "site-packages", "dist", "build", ".pytest_cache", ".mypy_cache"}
 
@@ -25,7 +37,7 @@ def looks_secret(name: str) -> bool:
 
 
 def main() -> int:
-    man = yaml.safe_load(open(os.path.join(HERE, "corpus_manifest.yaml"), encoding="utf-8"))
+    man = yaml.safe_load(open(data_file("corpus_manifest.yaml"), encoding="utf-8"))
     base = man["base"]
     cap = int(man.get("max_per_pattern", 150))
     if os.path.isdir(CORPUS):

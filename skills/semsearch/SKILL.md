@@ -1,6 +1,6 @@
 ---
 name: semsearch
-description: Search the user's local files by meaning with the SemSearch service (semantic + lexical hybrid search over F:\HexyLab, Documents, Downloads). Use when asked to find a document, note, spec, essay, email export, PDF, or code file by topic, half-remembered phrasing, or filename ("the doc where I discussed...", "find my notes on...", "which file mentions...", "*.pdf about X"). Works even when the exact words are not in the file. Read-only; never modifies files.
+description: Search the user's local files by meaning with the SemSearch service (semantic + lexical hybrid search over the folders the user chose to index). Use when asked to find a document, note, spec, essay, email export, PDF, or code file by topic, half-remembered phrasing, or filename ("the doc where I discussed...", "find my notes on...", "which file mentions...", "*.pdf about X"). Works even when the exact words are not in the file. Read-only; never modifies files.
 ---
 
 # SemSearch: find local files by meaning
@@ -14,9 +14,9 @@ if a shell predates the install) is the easiest way to use it. It is read-only t
 ```
 semsearch "the document where I discussed why agents should not perform destructive actions"
 semsearch query "GPU memory architecture" --semantic -n 5
-semsearch query "Tavoliere consensus" --literal
+semsearch query "BM25 tokenizer" --literal
 semsearch query "*.pdf" --literal -n 50                 # filename glob
-semsearch query "receipts constitutive" --ext md -n 10 --root F:\HexyLab\LV_Stack
+semsearch query "retry policy" --ext md -n 10 --root D:\Projects\api
 semsearch --json query "..."                           # machine-readable (preferred for agents); --json goes before the subcommand
 ```
 
@@ -24,8 +24,8 @@ Or over HTTP. Every read needs the admin token header (the `semsearch` command a
 after checking it is talking to the real service, so prefer the command):
 
 ```
-GET  http://127.0.0.1:8765/search?q=<url-encoded>&mode=hybrid&limit=10[&ext=md,pdf][&root=F:\HexyLab]
-POST http://127.0.0.1:8765/search   {"query": "...", "mode": "hybrid", "limit": 10, "extensions": ["md"], "roots": ["F:\\HexyLab"]}
+GET  http://127.0.0.1:8765/search?q=<url-encoded>&mode=hybrid&limit=10[&ext=md,pdf][&root=D:\Projects]
+POST http://127.0.0.1:8765/search   {"query": "...", "mode": "hybrid", "limit": 10, "extensions": ["md"], "roots": ["D:\\Projects"]}
 GET  http://127.0.0.1:8765/document?path=<full path>&chunks=true     # extracted text of an indexed file (PDF/DOCX too);
                                                                       # paged: &offset=0&limit=50 (chunk_count says how many)
 ```
@@ -75,7 +75,8 @@ Guidance:
 
 ## Scope and freshness
 
-- Indexed roots (check `semsearch status`): `F:\HexyLab`, `F:\Documents`, `F:\Downloads`. Virtual
+- Indexed roots: whatever the user configured (`semsearch roots` lists them; a new install starts
+  with the folders Windows Search indexes for content, such as Documents and Desktop). Virtual
   environments, `node_modules`, `.git`, build output and credential-looking files are excluded.
   Nothing outside the roots is ever returned.
 - Changes propagate within seconds (watcher) and a full reconcile runs hourly. A brand-new file

@@ -1,4 +1,4 @@
-"""Evaluation harness: index eval/corpus, run eval/queries.yaml in every mode, report metrics.
+"""Evaluation harness: index eval/corpus, run the labelled queries (eval/private/queries.yaml) in every mode, report metrics.
 
 Metrics (per mode and per query kind):
   top1        fraction of queries whose rank-1 result is relevant
@@ -11,7 +11,7 @@ Usage:
   uv run python eval/run_eval.py                      # bge-small (default config)
   uv run python eval/run_eval.py --model BAAI/bge-base-en-v1.5
   uv run python eval/run_eval.py --reuse              # skip re-indexing if the eval index exists
-Results: eval/results/<timestamp>_<model>.json and .md
+Results: eval/private/results/<timestamp>_<model>.json and .md
 """
 from __future__ import annotations
 
@@ -33,6 +33,18 @@ from semsearch.config import Config  # noqa: E402
 from semsearch.logging_setup import setup_logging  # noqa: E402
 
 CORPUS = os.path.join(HERE, "corpus")
+# Labelled queries, the corpus manifest and results live in eval/private/ (gitignored: the author's
+# set names private documents). Without it, the *.example.yaml files here show the format.
+DATA = os.environ.get("SEMSEARCH_EVAL_DATA") or (os.path.join(HERE, "private") if os.path.isdir(os.path.join(HERE, "private")) else HERE)
+
+
+def data_file(name: str) -> str:
+    p = os.path.join(DATA, name)
+    if os.path.exists(p):
+        return p
+    ex = os.path.join(HERE, name.replace(".yaml", ".example.yaml"))
+    print(f"note: {p} not found; using the example {ex}", file=sys.stderr)
+    return ex
 MODES = ["literal", "semantic", "hybrid"]
 
 
@@ -102,7 +114,7 @@ def run(args) -> dict:
             out["indexing"] = {"reused": True, "documents": stats["documents"], "chunks": stats["chunks"]}
             print(f"reusing index: {stats['documents']} docs / {stats['chunks']} chunks")
 
-        queries = yaml.safe_load(open(os.path.join(HERE, "queries.yaml"), encoding="utf-8"))["queries"]
+        queries = yaml.safe_load(open(data_file("queries.yaml"), encoding="utf-8"))["queries"]
         per_query = []
         # warm up (model + caches)
         st.retriever.search("warm up", "hybrid", 5)
@@ -197,10 +209,10 @@ def main() -> int:
         print("corpus missing: run eval/build_corpus.py first", file=sys.stderr)
         return 2
     out = run(args)
-    os.makedirs(os.path.join(HERE, "results"), exist_ok=True)
+    os.makedirs(os.path.join(DATA, "results"), exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
     tag = args.model.replace("/", "_") + ("_" + args.fusion if args.fusion != "convex" else "") + ("_" + args.device.replace(":", "") if args.device != "cpu" else "")
-    base = os.path.join(HERE, "results", f"{stamp}_{tag}")
+    base = os.path.join(DATA, "results", f"{stamp}_{tag}")
     with open(base + ".json", "w", encoding="utf-8") as f:
         json.dump(out, f, indent=1)
     write_report(out, base + ".md")

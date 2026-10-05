@@ -1,0 +1,23 @@
+# Evaluation queries with hand-labelled relevant files (format example; put your own set in
+# eval/private/queries.yaml, which is gitignored).
+#
+# `relevant` entries are matched as case-insensitive substrings of the result path (relative
+# to the corpus root, forward slashes). A query counts as answered at rank k if any relevant
+# file appears at rank k. `kind` groups queries for reporting:
+#   vague     - a half-remembered concept phrased without the document's own words (the
+#               target use case: "find the document where I discussed ...")
+#   exact     - a distinctive phrase or term that does appear in the document
+#   filename  - the user remembers part of the name or the extension
+queries:
+  - q: "the notes where I compared renting versus buying and decided to wait a year"
+    kind: vague
+    relevant: ["notes/housing_decision.md"]
+  - q: "the design doc that explains why we cache thumbnails on disk instead of in memory"
+    kind: vague
+    relevant: ["docs/thumbnail_cache.md"]
+  - q: "exponential backoff with jitter"
+    kind: exact
+    relevant: ["src/retry.py", "docs/retry_policy.md"]
+  - q: "quarterly report pdf"
+    kind: filename
+    relevant: ["reports/q3_report.pdf"]

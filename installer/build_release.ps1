@@ -71,7 +71,7 @@ Get-ChildItem $pyDir -Recurse -Directory -Filter "__pycache__" | Remove-Item -Re
 if ($LASTEXITCODE -ne 0) { throw "packaged runtime verification failed" }
 
 "[7/9] copying installer scripts, licence and example configuration"
-foreach ($f in @("install.ps1", "uninstall.ps1", "validate.ps1", "verify_runtime.py", "relocate_launchers.py", "collect_notices.py", "release_manifest.py", "model_manifest.py", "README.md")) {
+foreach ($f in @("Install.cmd", "Uninstall.cmd", "install.ps1", "uninstall.ps1", "validate.ps1", "verify_runtime.py", "relocate_launchers.py", "collect_notices.py", "release_manifest.py", "model_manifest.py", "README.md")) {
   Copy-Item "$repo\installer\$f" "$out\" -Force
 }
 Copy-Item "$repo\semsearch.example.yaml" "$out\semsearch.example.yaml"

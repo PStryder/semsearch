@@ -1,6 +1,6 @@
 [project]
 name = "semsearch"
-version = "0.6.1"
+version = "0.6.2"
 license = "MIT"
 license-files = ["LICENSE"]
 description = "Windows semantic-search sidecar: augments Windows Search with local embeddings and hybrid retrieval"

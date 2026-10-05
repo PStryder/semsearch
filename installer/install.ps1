@@ -61,6 +61,10 @@ if (-not ([Security.Principal.WindowsPrincipal]$id).IsInRole([Security.Principal
 $src = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\')
 $srcPy = (Get-ChildItem "$src\python\cpython-*\python.exe" -ErrorAction SilentlyContinue | Select-Object -First 1).FullName
 if (-not $srcPy) { Fail "run install.ps1 from inside a staged release directory (build_release.ps1)" }
+# a release extracted from a downloaded zip carries the internet-zone mark (Zone.Identifier) on
+# every file; clear it on the release tree so the installed runtime does not inherit it
+$marked = @(Get-ChildItem -LiteralPath $src -Recurse -File -Force | Where-Object { Get-Item -LiteralPath $_.FullName -Stream Zone.Identifier -ErrorAction SilentlyContinue })
+if ($marked.Count) { Step "clearing the downloaded-file mark on $($marked.Count) release files"; $marked | Unblock-File }
 $version = (Get-Content "$src\VERSION").Trim()
 $InstallDir = Assert-SafeDir $InstallDir "InstallDir"
 $DataDir = Assert-SafeDir $DataDir "DataDir"
@@ -164,7 +168,7 @@ try {
   New-Item -ItemType Directory -Force $InstallDir | Out-Null
   $script:newCopied = $true
   Copy-Item "$src\python" "$InstallDir\python" -Recurse
-  foreach ($f in @("VERSION", "install.ps1", "uninstall.ps1", "validate.ps1", "verify_runtime.py", "relocate_launchers.py", "release_manifest.py", "collect_notices.py", "LICENSE")) {
+  foreach ($f in @("VERSION", "Uninstall.cmd", "install.ps1", "uninstall.ps1", "validate.ps1", "verify_runtime.py", "relocate_launchers.py", "release_manifest.py", "collect_notices.py", "LICENSE")) {
     if (Test-Path "$src\$f") { Copy-Item "$src\$f" "$InstallDir\" }
   }
   foreach ($f in @("THIRD-PARTY-NOTICES.txt", "sbom.json", "model-manifest.json", "requirements.lock.txt", "release-manifest.json")) {
