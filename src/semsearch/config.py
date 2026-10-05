@@ -37,8 +37,9 @@ DEFAULT_EXCLUDES = [
     # a user profile as a root: application state and the profile's dot-directories are never
     # documents (Windows Search excludes the same two; measured: 368k files queued without them)
     "**/AppData/**", "**/Users/*/.*/**",
-    # semsearch's own evaluation corpus and indexes (copies of the user's files)
-    "**/semsearch/eval/corpus/**", "**/semsearch/eval/index_*/**", "**/semsearch/dist/**",
+    # semsearch's own evaluation corpus and indexes (copies of the user's files), and the private
+    # eval set (queries that quote document titles: hits on it would shadow the real documents)
+    "**/semsearch/eval/corpus/**", "**/semsearch/eval/index_*/**", "**/semsearch/eval/private/**", "**/semsearch/dist/**",
     # credential-looking locations (path globs) ...
     "**/.ssh/**", "**/.aws/**", "**/.azure/**", "**/.gnupg/**", "**/.kube/**", "**/.docker/config.json",
     # ... and credential-looking FILE names (bare patterns match the file name only, never a folder name);
