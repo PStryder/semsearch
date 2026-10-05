@@ -92,11 +92,11 @@ if ($LASTEXITCODE -ne 0) { throw "release manifest failed" }
 "release staged: $out"
 
 if ($Zip) {
-  $zip = Join-Path $repo "$OutRoot\SemSearch-$version.zip"
-  if (Test-Path $zip) { Remove-Item -Force $zip }
-  "zipping -> $zip"
-  Compress-Archive -Path $out -DestinationPath $zip -CompressionLevel Optimal
-  $hash = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
-  Set-Content "$zip.sha256" "$hash  SemSearch-$version.zip" -Encoding ascii
+  $zipPath = Join-Path $repo "$OutRoot\SemSearch-$version.zip"
+  if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
+  "zipping -> $zipPath"
+  Compress-Archive -Path $out -DestinationPath $zipPath -CompressionLevel Optimal
+  $hash = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLower()
+  Set-Content "$zipPath.sha256" "$hash  SemSearch-$version.zip" -Encoding ascii
   "sha256 $hash"
 }

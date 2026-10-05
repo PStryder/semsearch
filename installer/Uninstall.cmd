@@ -6,7 +6,7 @@ cd /d "%~dp0"
 net session >nul 2>&1
 if errorlevel 1 (
   set "SEMSEARCH_SELF=%~f0"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:SEMSEARCH_SELF -Verb RunAs"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath (Split-Path -LiteralPath $env:SEMSEARCH_SELF) -Recurse -File | Unblock-File; Start-Process -FilePath $env:SEMSEARCH_SELF -Verb RunAs"
   exit /b
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0uninstall.ps1" %*

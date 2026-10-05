@@ -8,8 +8,10 @@ net session >nul 2>&1
 if errorlevel 1 (
   rem not elevated: start this same file again as administrator (the path travels in an
   rem environment variable, so quotes or apostrophes in it cannot break the command line)
+  rem first clear the downloaded-file mark on the extracted release (the user owns those files),
+  rem or Windows shows its security warning a second time for the relaunch
   set "SEMSEARCH_SELF=%~f0"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath $env:SEMSEARCH_SELF -Verb RunAs"
+  powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem -LiteralPath (Split-Path -LiteralPath $env:SEMSEARCH_SELF) -Recurse -File | Unblock-File; Start-Process -FilePath $env:SEMSEARCH_SELF -Verb RunAs"
   exit /b
 )
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1" %*
