@@ -241,3 +241,39 @@ def selector_for(a: Adapter) -> dict[str, Any]:
     if a.address:
         sel["address"] = a.address
     return sel
+
+
+# ---- hardware profiles: the one choice offered to the user (tray / API) ----
+# "light": everyday indexing on the integrated GPU (the CPU when there is none); the dedicated
+#          GPU only takes the big jobs (a full build, a deep queue) as the bulk device.
+# "gpu":   all document embedding on the dedicated GPU.
+# Search queries stay on the CPU in both (fastest for one short text; measured 2.9 ms).
+PROFILES = ("light", "gpu")
+
+
+def named_present(named: dict[str, dict[str, Any]], adapters: list[Adapter]) -> dict[str, str | None]:
+    """The first logical name under `embedding.devices` that matches a present integrated and a
+    present dedicated adapter ({'integrated': name|None, 'dedicated': name|None})."""
+    out: dict[str, str | None] = {"integrated": None, "dedicated": None}
+    for name, sel in (named or {}).items():
+        a = match_adapter(sel or {}, adapters)
+        if a is None:
+            continue
+        kind = "integrated" if a.integrated else "dedicated"
+        if out[kind] is None:
+            out[kind] = name
+    return out
+
+
+def profile_specs(profile: str, named: dict[str, dict[str, Any]], adapters: list[Adapter]) -> dict[str, str]:
+    """The `device` / `bulk_device` settings a profile stands for on this machine. Raises
+    ValueError for an unknown profile, or 'gpu' without a dedicated GPU."""
+    if profile not in PROFILES:
+        raise ValueError(f"unknown hardware profile {profile!r}; use one of {', '.join(PROFILES)}")
+    have = named_present(named, adapters)
+    if profile == "gpu":
+        if not have["dedicated"]:
+            raise ValueError("no dedicated GPU is defined under embedding.devices and present on this machine")
+        return {"device": have["dedicated"], "bulk_device": have["dedicated"]}
+    steady = have["integrated"] or "cpu"
+    return {"device": steady, "bulk_device": have["dedicated"] or steady}

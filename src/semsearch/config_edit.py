@@ -1,6 +1,7 @@
 """Edit list-valued top-level keys of semsearch.yaml in place, textually, so the comments and
-layout the installer wrote survive (PyYAML round-trips lose comments). Only `roots:` and
-`excludes:` are edited this way; everything else stays byte-identical.
+layout the installer wrote survive (PyYAML round-trips lose comments). Edited this way:
+`roots:` and `excludes:` (lists), and the hardware-profile scalars under `embedding:`;
+everything else stays byte-identical.
 """
 from __future__ import annotations
 
@@ -58,6 +59,82 @@ def set_list_block(text: str, key: str, values: list[str], comment: str | None =
             break
     new = render_block(key, values, comment, nl)
     return "".join(lines[:start]) + new + "".join(lines[end:])
+
+
+_SCALAR = re.compile(r"^[A-Za-z0-9_.:-]+$")
+
+
+def set_section_scalars(text: str, section: str, values: dict[str, str]) -> str:
+    """Set `key: value` lines that are direct children of the top-level `section:` mapping
+    (replacing the value, keeping a trailing comment), adding missing keys at the end of the
+    section and the section itself at the end of the file. Values are plain YAML scalars only."""
+    nl = "\r\n" if "\r\n" in text else "\n"
+    lines = text.splitlines(keepends=True)
+    start = end = None
+    for i, ln in enumerate(lines):
+        m = _TOP_KEY.match(ln.rstrip("\r\n"))
+        if start is None:
+            if m and m.group("key") == section:
+                start = i
+            continue
+        if m:
+            end = i
+            break
+    if start is None:
+        body = "".join(lines)
+        if body and not body.endswith("\n"):
+            body += nl
+        return body + f"{section}:{nl}" + "".join(f"  {k}: {v}{nl}" for k, v in values.items())
+    if end is None:
+        end = len(lines)
+    # the indentation of the section's direct children: the first indented, non-comment line
+    indent = next((len(ln) - len(ln.lstrip(" ")) for ln in lines[start + 1:end] if ln.strip() and not ln.lstrip().startswith("#")), 2)
+    child = re.compile(r"^" + " " * indent + r"(?P<key>[A-Za-z_][A-Za-z0-9_]*):(?P<val>[^#\r\n]*)(?P<comment>#[^\r\n]*)?$")
+    todo = dict(values)
+    last_child = start
+    for i in range(start + 1, end):
+        raw = lines[i].rstrip("\r\n")
+        if raw.strip() and not raw.lstrip().startswith("#"):
+            last_child = i
+        m = child.match(raw)
+        if not m or m.group("key") not in todo:
+            continue
+        v = todo.pop(m.group("key"))
+        comment = m.group("comment")
+        lines[i] = " " * indent + f"{m.group('key')}: {v}" + (f"   {comment}" if comment else "") + nl
+    if todo:
+        ins = "".join(" " * indent + f"{k}: {v}{nl}" for k, v in todo.items())
+        if not lines[last_child].endswith(("\n", "\r")):
+            lines[last_child] += nl
+        lines.insert(last_child + 1, ins)
+    return "".join(lines)
+
+
+def update_config_scalars(path: str | os.PathLike, section: str, values: dict[str, str]) -> str:
+    """Rewrite scalar keys of one top-level section of the YAML file, atomically. Refuses
+    anything but plain scalars (no quoting, spaces or control characters can reach the file),
+    and refuses to write unless the result parses back to the old document with exactly those
+    keys changed."""
+    import yaml
+    for k, v in values.items():
+        if not _SCALAR.match(k) or not _SCALAR.match(v):
+            raise ValueError(f"not a plain configuration scalar: {k!r}: {v!r}")
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:
+        original = f.read()
+    text = set_section_scalars(original, section, values)
+    before = yaml.safe_load(original) or {}
+    try:
+        after = yaml.safe_load(text) or {}
+    except yaml.YAMLError as e:  # e.g. a flow-style `section: {...}` the line editor cannot extend
+        raise ValueError(f"refusing to write the configuration: the edited file would not parse ({e})") from e
+    want = dict(before)
+    sec = dict(want.get(section) or {})
+    sec.update({k: yaml.safe_load(v) for k, v in values.items()})
+    want[section] = sec
+    if after != want:
+        raise ValueError("refusing to write the configuration: the edited file would not parse back to the requested values")
+    write_atomic(path, text)
+    return text
 
 
 def list_block_values(text: str, key: str) -> list[str] | None:

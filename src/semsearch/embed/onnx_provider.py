@@ -198,6 +198,18 @@ class OnnxProvider:
             self.bulk_mode = on
             log.info("embedding documents on %s (%s)", self.device, "bulk" if on else "steady state")
 
+    def set_role_devices(self, **specs: str) -> None:
+        """Move roles (steady, bulk, query) to other devices at runtime (the tray's hardware
+        choice). Sessions are created lazily on first use; a batch already running finishes on
+        the device it started on."""
+        avail = self._ort.get_available_providers()
+        with self._lock:
+            for role, spec in specs.items():
+                if role not in self.devices:
+                    raise ValueError(f"unknown device role {role!r}")
+                self.devices[role] = resolve_device(spec, avail)
+        log.info("embedding devices changed: %s", self.device_summary())
+
     def _session(self, dev: tuple[str, int]):
         with self._lock:
             s = self._sessions.get(dev)

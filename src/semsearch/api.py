@@ -62,6 +62,10 @@ class ExcludesRequest(BaseModel):
     excludes: list[Annotated[str, Field(max_length=512)]] = Field(max_length=1000)
 
 
+class DevicesRequest(BaseModel):
+    profile: Literal["light", "gpu"]
+
+
 MAX_BODY = 1 << 20  # 1 MB: the largest legitimate body is an exclusion list
 
 
@@ -370,6 +374,21 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         with _scope_lock:
             try:
                 return st().apply_scope(excludes=req.excludes)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
+
+    @app.get("/config/devices")
+    def config_devices(_: None = Depends(require_read)):
+        """The hardware choice: the recorded profile ("light" | "gpu" | null), what each would set
+        on this machine (null = unavailable), and `ask` (no choice yet and a dedicated GPU exists)."""
+        return st().device_options()
+
+    @app.post("/config/devices")
+    def set_config_devices(req: DevicesRequest, _: None = Depends(require_admin)):
+        """Pick the hardware profile: persisted into the configuration file and applied live."""
+        with _scope_lock:
+            try:
+                return st().apply_device_profile(req.profile)
             except ValueError as e:
                 raise HTTPException(400, str(e))
 

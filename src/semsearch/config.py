@@ -63,6 +63,9 @@ class EmbeddingConfig(BaseModel):
     bulk_device: str = "same"
     query_device: str = "same"
     fallback_device: str = "cpu"
+    # the hardware profile the user picked in the tray ("light" | "gpu"; devices.PROFILES), which
+    # wrote `device`/`bulk_device`. None = never asked: the tray asks once when a dedicated GPU exists
+    device_profile: Literal["light", "gpu"] | None = None
     devices: dict[str, dict[str, Any]] = Field(default_factory=lambda: {
         # generic selectors that work on most machines; the installer rewrites them with the exact
         # vendor/device/subsystem ids and PCI address of the adapters it finds

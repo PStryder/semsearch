@@ -55,6 +55,7 @@ embedding:
   bulk_device: same                     # used during full builds / deep queues (see "Devices")
   query_device: same                    # query embedding (latency matters)
   fallback_device: cpu                  # used when a named device is not present (logged, never fatal)
+  device_profile: null                  # light | gpu: the tray's hardware choice (see "Devices"); null = not asked yet
   devices:                              # logical names -> stable selectors (vendor/device/subsys/address/name/integrated)
     integrated-gpu: {integrated: true}
     discrete-gpu: {integrated: false}
@@ -203,7 +204,24 @@ embedding:
   query_device: cpu
 ```
 
-With that policy a modified 10-chunk document costs about 1.5 s on the integrated GPU, a full
+### The hardware choice (tray)
+
+After setup the tray asks once, when the machine has a dedicated GPU, which of two profiles to use
+(`embedding.device_profile`). It can be changed later under tray icon > *Indexing hardware*, or
+with `POST /config/devices`; either way the change is written into this file and applied live.
+
+| profile | `device` (everyday changes) | `bulk_device` (full builds, > `bulk_threshold` queued) |
+|---|---|---|
+| `light` | the integrated GPU, or `cpu` when there is none | the dedicated GPU |
+| `gpu` | the dedicated GPU | the dedicated GPU |
+
+`query_device` is left alone (CPU is fastest for one query). Cancel leaves the profile unset and
+the tray asks again at its next start; without a dedicated GPU there is nothing to choose and it
+never asks. Under `light`, work that arrives as fewer than `bulk_threshold` jobs runs on the
+integrated GPU even when each job is large (an upgrade that re-extracts a hundred big files, say):
+`gpu` is the profile for catching up quickly.
+
+With the light policy a modified 10-chunk document costs about 1.5 s on the integrated GPU, a full
 first pass over ~500k chunks about 35 minutes on the 4080 (versus ~5 h on CPU, ~20 h on the
 integrated GPU), and a query stays at a few milliseconds.
 

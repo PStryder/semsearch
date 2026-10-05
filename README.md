@@ -39,7 +39,8 @@ semsearch service status | start | stop | restart
 
 Details, identity rationale, upgrade/uninstall and troubleshooting: [docs/windows-service.md](docs/windows-service.md).
 
-A tray icon (per-user logon task) shows status and manages the indexed folders; `http://127.0.0.1:8765/ui`
+A tray icon (per-user logon task) shows status, manages the indexed folders and, after setup, asks
+whether indexing should run light (integrated GPU/CPU) or on the dedicated GPU; `http://127.0.0.1:8765/ui`
 is the settings page. A new install starts with the folders Windows Search already indexes for content.
 
 ## Development quick start

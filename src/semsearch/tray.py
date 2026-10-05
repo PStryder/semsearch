@@ -1,7 +1,8 @@
 """Per-user tray icon for the SemSearch service (the service itself runs in Session 0 and
 cannot show UI). Runs as the logged-on operator, started by a logon task the installer
 registers. Menu: status line, open the settings page, pause/resume, Folders (add, remove,
-use the Windows Search scope), open logs, start/stop/restart the service, quit.
+use the Windows Search scope), Indexing hardware (light / dedicated GPU; asked once after
+setup), open logs, start/stop/restart the service, quit.
 
 Everything that needs the operator's rights lives here: granting the service account read
 access on a new folder (icacls, as the folder's owner), and service control through the
@@ -54,6 +55,29 @@ def icon_state(health: dict | None, status: dict | None) -> str:
     return "ok"
 
 
+def hardware_question(opts: dict) -> str:
+    """The one-time question (Yes / No / Cancel on a Win32 message box, which cannot relabel its
+    buttons, so the text says which button is which)."""
+    labels = opts.get("labels") or {}
+    light_dev = labels.get("integrated") or ("the integrated GPU" if (opts.get("present") or {}).get("integrated") else "the CPU")
+    gpu_dev = labels.get("dedicated") or "the dedicated GPU"
+    return ("How should SemSearch use this computer's hardware for indexing?\n\n"
+            f"YES = Light: everyday indexing runs on {light_dev}. The dedicated GPU ({gpu_dev}) is used "
+            "only for big jobs (the first build, large backlogs). Keeps the dedicated GPU free for games and other work.\n\n"
+            f"NO = Dedicated GPU: all indexing runs on {gpu_dev}. Much faster at catching up after "
+            "changes, but uses the dedicated GPU whenever files change.\n\n"
+            "CANCEL = ask me next time.\n\n"
+            "Searching runs on the CPU either way. You can change this later: tray icon > Indexing hardware.")
+
+
+def hardware_label(profile: str, opts: dict) -> str:
+    labels = opts.get("labels") or {}
+    if profile == "gpu":
+        return f"Dedicated GPU ({labels.get('dedicated') or 'all indexing'})"
+    return f"Light ({labels.get('integrated') or 'CPU'}; dedicated GPU for big jobs only)" if (opts.get("options") or {}).get("gpu") \
+        else f"Light ({labels.get('integrated') or 'CPU'})"
+
+
 class TrayApp:
     def __init__(self, cfg):
         self.cfg = cfg
@@ -63,6 +87,7 @@ class TrayApp:
         self.icon = None
         self._stop = threading.Event()
         self._state = "ok"
+        self.devices: dict | None = None  # GET /config/devices; fetched at start and after a change, not every poll
 
     # ---- service I/O ----
     def _client(self):
@@ -252,6 +277,46 @@ class TrayApp:
             self.message(str(e), kind="error")
         self.refresh()
 
+    def fetch_devices(self) -> dict | None:
+        try:
+            with self._client() as c:
+                r = c.get("/config/devices")
+                self.devices = r.json() if r.status_code < 400 else None
+        except Exception:  # noqa: BLE001
+            self.devices = None
+        return self.devices
+
+    def set_hardware(self, profile: str) -> bool:
+        if not self.token():
+            self.message("The admin token is not readable by this account; the hardware choice can only be changed by the operator who installed SemSearch.", kind="warn")
+            return False
+        try:
+            with self._client() as c:
+                r = c.post("/config/devices", json={"profile": profile})
+                if r.status_code >= 400:
+                    raise RuntimeError(r.json().get("detail", r.text))
+        except Exception as e:  # noqa: BLE001
+            self.message(f"could not change the indexing hardware: {e}", kind="error")
+            return False
+        self.fetch_devices()
+        self.refresh()
+        return True
+
+    def ask_hardware_if_unset(self) -> str | None:
+        """Ask once (after install, or on an upgrade that predates the choice) when there is a
+        real choice to make. Cancel leaves it unset, so the next tray start asks again."""
+        import win32api
+        import win32con
+        opts = self.fetch_devices()
+        if not opts or not opts.get("ask") or not opts.get("editable") or not self.token():
+            return None
+        ans = win32api.MessageBox(0, hardware_question(opts), "SemSearch: indexing hardware",
+                                  win32con.MB_YESNOCANCEL | win32con.MB_ICONQUESTION | win32con.MB_SETFOREGROUND)
+        profile = {win32con.IDYES: "light", win32con.IDNO: "gpu"}.get(ans)
+        if profile and self.set_hardware(profile):
+            return profile
+        return None
+
     def service(self, action: str):
         from .cli import service_control
         rc = service_control(action, self.cfg.service.name)
@@ -277,11 +342,17 @@ class TrayApp:
             Menu.SEPARATOR,
             *[Item(f"Remove {r}", (lambda p: (lambda *_: self.remove_folder(p)))(r)) for r in roots],
         )
+        dev = self.devices or {}
+        hw_items = [Item(hardware_label(p, dev), (lambda q: (lambda *_: self.set_hardware(q)))(p),
+                         checked=(lambda q: (lambda _item: dev.get("profile") == q))(p), radio=True,
+                         enabled=bool((dev.get("options") or {}).get(p)) and bool(dev.get("editable")))
+                    for p in ("light", "gpu")]
         return Menu(
             Item(status_line(self.health, self.status), None, enabled=False),
             Item("Open settings page", self.open_settings, default=True),
             Item("Resume indexing" if paused else "Pause indexing", self.toggle_pause, enabled=self.health is not None),
             Item("Folders", folders),
+            Item("Indexing hardware", Menu(*hw_items), enabled=bool(dev)),
             Item("Open logs folder", self.open_logs),
             Item("Service", Menu(Item("Start", lambda *_: self.service("start")), Item("Stop", lambda *_: self.service("stop")), Item("Restart", lambda *_: self.service("restart")))),
             Menu.SEPARATOR,
@@ -298,6 +369,20 @@ class TrayApp:
             self.icon.title = status_line(self.health, self.status)[:127]
             self.icon.menu = self.build_menu()
 
+    def _first_run(self) -> None:
+        # the installer starts the tray while the service may still be warming up: wait for it
+        # (up to ~2 minutes) before deciding whether to ask
+        for _ in range(24):
+            if self._stop.is_set():
+                return
+            if self.devices is not None or self.fetch_devices() is not None:
+                break
+            self._stop.wait(5.0)
+        try:
+            self.ask_hardware_if_unset()
+        except Exception as e:  # noqa: BLE001
+            log.debug("hardware question: %s", e)
+
     def _poll_loop(self) -> None:
         while not self._stop.wait(10.0):
             try:
@@ -308,9 +393,11 @@ class TrayApp:
     def run(self) -> int:
         import pystray
         self.poll()
+        self.fetch_devices()
         self._state = icon_state(self.health, self.status)
         self.icon = pystray.Icon("semsearch", make_icon_image(state=self._state), status_line(self.health, self.status)[:127], self.build_menu())
         threading.Thread(target=self._poll_loop, name="semsearch-tray-poll", daemon=True).start()
+        threading.Thread(target=self._first_run, name="semsearch-tray-ask", daemon=True).start()
         self.icon.run()
         return 0
 

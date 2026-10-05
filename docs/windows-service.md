@@ -334,7 +334,14 @@ and starts it right away. The tray icon (a magnifier: blue when the service answ
 when indexing is paused, grey when it is unreachable) shows the document count and queue in
 its tooltip and offers: the settings page, pause/resume, **Folders** (add a folder through the
 native picker, remove one, or *Use the Windows Search scope*), the logs folder, and service
-start/stop/restart through the DACL the installer granted. "Quit" only closes the tray.
+start/stop/restart through the DACL the installer granted, and **Indexing hardware** (Light or
+Dedicated GPU; see configuration.md, "The hardware choice"). "Quit" only closes the tray.
+
+The installer cannot ask questions (it runs elevated and may run hidden), so the hardware
+choice is asked by the tray when it first starts: once the service answers, and only when a
+dedicated GPU is present and no `embedding.device_profile` is recorded yet. Yes = Light, No =
+Dedicated GPU, Cancel = ask at the next start. An upgrade from a version without the choice
+asks once too.
 
 Folder changes are applied **live**, without a service restart, and persisted into
 `semsearch.yaml` by a textual edit that keeps the file's comments. The flow is split by who

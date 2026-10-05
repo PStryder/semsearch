@@ -203,6 +203,75 @@ class AppState:
         out["config"] = str(self.cfg.source_path) if self.cfg.source_path else None
         return out
 
+    # ---- hardware profile (tray / API) ----
+    @staticmethod
+    def _adapters() -> list:
+        if sys.platform != "win32":
+            return []
+        from . import devices
+        return devices.enumerate_adapters()
+
+    def device_options(self) -> dict[str, Any]:
+        """The hardware choice as the tray presents it: the recorded profile, what each profile
+        would set on this machine (None when unavailable), and whether the user should be asked."""
+        from .devices import PROFILES, match_adapter, named_present, profile_specs
+        emb = self.raw_cfg.embedding
+        adapters = self._adapters()
+        options: dict[str, Any] = {}
+        for p in PROFILES:
+            try:
+                options[p] = profile_specs(p, emb.devices, adapters)
+            except ValueError:
+                options[p] = None
+        present = named_present(emb.devices, adapters)
+        labels = {}
+        for kind, name in present.items():
+            a = match_adapter(emb.devices.get(name) or {}, adapters) if name else None
+            labels[kind] = a.name if a else None
+        return {"profile": emb.device_profile, "options": options, "present": present, "labels": labels,
+                "current": {"device": emb.device, "bulk_device": emb.bulk_device, "query_device": emb.query_device},
+                "resolved": {k: v.get("resolved") for k, v in self.device_resolution.get("roles", {}).items()},
+                "editable": bool(self.cfg.source_path),
+                # only a real choice is worth a question: without a dedicated GPU both are "light"
+                "ask": emb.device_profile is None and options["gpu"] is not None}
+
+    def apply_device_profile(self, profile: str) -> dict[str, Any]:
+        """Persist the hardware profile into the configuration file (comments kept) and move the
+        embedder's steady and bulk roles to the new devices live; no restart."""
+        from .devices import profile_specs
+        emb = self.raw_cfg.embedding
+        specs = profile_specs(profile, emb.devices, self._adapters())  # ValueError: unknown / unavailable
+        if self.cfg.source_path:
+            import yaml
+            from .config_edit import update_config_scalars
+            with open(self.cfg.source_path, "r", encoding="utf-8-sig") as f:
+                on_disk = (yaml.safe_load(f) or {}).get("embedding") or {}
+            # the file may spell the steady role with its alias; write the spelling it uses
+            steady_key = "steady_state_device" if "steady_state_device" in on_disk else "device"
+            update_config_scalars(self.cfg.source_path, "embedding",
+                                  {steady_key: specs["device"], "bulk_device": specs["bulk_device"], "device_profile": profile})
+        emb.device, emb.bulk_device, emb.device_profile = specs["device"], specs["bulk_device"], profile
+        resolved, report = resolve_devices(self.raw_cfg)
+        self.device_resolution = report
+        try:
+            with open(self.cfg.state_path / "devices.json", "w", encoding="utf-8") as f:
+                json.dump(report, f, indent=1)
+        except OSError as e:
+            log.debug("could not persist device resolution: %s", e)
+        live = self.cfg.embedding
+        live.device, live.bulk_device, live.device_profile = resolved.embedding.device, resolved.embedding.bulk_device, profile
+        setter = getattr(self.embedder, "set_role_devices", None)
+        if setter is not None:
+            setter(steady=live.device, bulk=live.device if live.bulk_device == "same" else live.bulk_device)
+        self.indexer.bulk_luid = None
+        bulk = report.get("roles", {}).get("bulk_device", {}).get("resolved", "")
+        if bulk.startswith("dml:"):
+            n = int(bulk.split(":")[1])
+            self.indexer.bulk_luid = next((a["luid"] for a in report.get("adapters", []) if a["ordinal"] == n), None)
+        log.info("hardware profile set to %r: steady %s, bulk %s", profile, live.device, live.bulk_device)
+        return {"profile": profile, **specs, "resolved": {k: v.get("resolved") for k, v in report.get("roles", {}).items()},
+                "config": str(self.cfg.source_path) if self.cfg.source_path else None}
+
     def close_without_indexer(self) -> None:
         if hasattr(self.extractor, "close"):
             self.extractor.close()
