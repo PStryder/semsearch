@@ -48,7 +48,7 @@ def _child_main(conn, cfg_json: str) -> None:  # pragma: no cover - runs in chil
     import logging as _l
     _l.basicConfig(level=_l.WARNING)
     from ..config import Config as _C
-    from .registry import build_default_registry
+    from .registry import build_default_registry, clean_text
     cfg = _C.model_validate_json(cfg_json)
     reg = build_default_registry(cfg)
     while True:
@@ -61,7 +61,10 @@ def _child_main(conn, cfg_json: str) -> None:  # pragma: no cover - runs in chil
         path, ext = msg
         try:
             r = reg.extract(path, ext)
-            conn.send_bytes(_encode([r.text, r.status, r.method, r.error, r.meta]))
+            # cap and clean BEFORE encoding: the parent refuses oversized replies, and an
+            # extractor that overran its own cap must cost a truncated result, not a dead child
+            text = clean_text(r.text or "")[: cfg.indexing.max_text_chars]
+            conn.send_bytes(_encode([text, r.status, r.method, r.error, r.meta]))
         except BaseException as e:  # noqa: BLE001
             try:
                 conn.send_bytes(_encode(["", "error", "isolated", f"{type(e).__name__}: {e}"[:500], {}]))
@@ -117,7 +120,8 @@ class IsolatedExtractor:
         from .text import TextExtractor
         self._inproc_exts = {ext for ext, chain in registry.chains.items() if chain and all(isinstance(e, TextExtractor) for e in chain)}
         self.restarts = 0
-        self._max_reply = 4 * int(cfg.indexing.max_text_chars) + (1 << 20)
+        # JSON escapes a character to at most 6 bytes (\uXXXX); the child sends at most max_text_chars
+        self._max_reply = 6 * int(cfg.indexing.max_text_chars) + (1 << 20)
 
     def _start(self) -> None:
         parent, child = self._ctx.Pipe()

@@ -107,6 +107,20 @@ def has_registered_filter(extension: str) -> bool:
     return bool(clsid) and clsid.lower() != "{098f2470-bae0-11cd-b579-08002b30bfeb}"  # null filter
 
 
+def _release_raw(ptr) -> None:
+    """IUnknown::Release on a raw interface pointer (vtable slot 2)."""
+    import ctypes
+    try:
+        addr = ptr.value if hasattr(ptr, "value") else int(ptr)
+        if not addr:
+            return
+        vtbl = ctypes.cast(addr, ctypes.POINTER(ctypes.POINTER(ctypes.c_void_p)))[0]
+        release = ctypes.WINFUNCTYPE(ctypes.c_ulong, ctypes.c_void_p)(vtbl[2])
+        release(addr)
+    except Exception as e:  # noqa: BLE001
+        log.debug("stream release failed: %s", e)
+
+
 class IFilterExtractor:
     name = "ifilter"
 
@@ -146,10 +160,21 @@ class IFilterExtractor:
         init = unk.QueryInterface(IInitializeWithStream)
         init.Initialize(pstm, STGM_READ)
         flt = unk.QueryInterface(IFilter)
-        flt._semsearch_stream = pstm  # keep alive
+        flt._semsearch_stream = pstm  # kept alive while the filter reads; released in extract()
         return flt
 
     def extract(self, path: str, extension: str) -> ExtractResult:
+        flt_holder: list = []
+        try:
+            return self._extract(path, extension, flt_holder)
+        finally:
+            for flt in flt_holder:
+                stm = getattr(flt, "_semsearch_stream", None)
+                if stm:
+                    _release_raw(stm)
+                    flt._semsearch_stream = None
+
+    def _extract(self, path: str, extension: str, flt_holder: list) -> ExtractResult:
         _com_init()
         IFilter, _, STAT_CHUNK, _, _ = _declare()
         flt = None
@@ -166,6 +191,7 @@ class IFilterExtractor:
                 return ExtractResult("", "error", self.name, error=f"filter load failed: {e}")
         if flt is None:
             return ExtractResult("", "unsupported", self.name, error="no IFilter could be loaded")
+        flt_holder.append(flt)
         try:
             flt.Init(IFILTER_INIT_INDEXING_ONLY | IFILTER_INIT_CANON_PARAGRAPHS | IFILTER_INIT_APPLY_INDEX_ATTRIBUTES, 0, None)
         except Exception as e:
@@ -177,6 +203,7 @@ class IFilterExtractor:
         out: list[str] = []
         total = 0
         chunks = 0
+        skipped = 0
         while total < self.max_chars:
             stat = STAT_CHUNK()
             hr = get_chunk(byref(stat)) & 0xFFFFFFFF
@@ -184,6 +211,9 @@ class IFilterExtractor:
                 break
             if hr != 0:
                 if hr in _SKIP_CHUNK_HRS:
+                    skipped += 1
+                    if skipped > 100_000:
+                        break   # a filter that only ever skips must not spin until the timeout
                     continue
                 if chunks == 0:
                     return ExtractResult("", "error", self.name, error=f"GetChunk hr=0x{hr:08x}")
@@ -202,7 +232,7 @@ class IFilterExtractor:
                 if s:
                     out.append(s)
                     total += len(s)
-                if hr == FILTER_S_LAST_TEXT:
-                    break
-        text = "".join(out)
+                if hr == FILTER_S_LAST_TEXT or total >= self.max_chars:
+                    break   # one chunk can be unbounded: the cap applies inside it too
+        text = "".join(out)[: self.max_chars]
         return ExtractResult(text, "ok" if text.strip() else "empty", method, meta={"chunks": chunks})

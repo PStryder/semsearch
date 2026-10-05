@@ -41,5 +41,5 @@ class PdfExtractor:
                 if t.strip():
                     parts.append(t)
                     total += len(t)
-        text = "\n\n".join(parts)
+        text = "\n\n".join(parts)[: self.max_chars]   # one page can yield tens of millions of chars
         return ExtractResult(text, "ok" if text.strip() else "empty", self.name, meta={"pages": n})

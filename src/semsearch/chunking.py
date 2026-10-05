@@ -29,6 +29,7 @@ CODE_EXTS = {".py", ".pyi", ".js", ".mjs", ".ts", ".tsx", ".jsx", ".cs", ".c", "
 
 def normalize_text(text: str) -> str:
     t = text.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
+    t = re.sub(r"(?m)^[ \t\f\v]+$", "", t)   # whitespace-only lines are block gaps, never content
     t = re.sub(r"\n{4,}", "\n\n\n", t)
     return t
 

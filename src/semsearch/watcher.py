@@ -136,7 +136,10 @@ class DirectoryWatcher:
                         del self._pending[p]
             for a, p, old in ready:
                 if a == "overflow":
-                    log.warning("watch buffer overflow under %s; relying on next incremental/reconcile", p)
+                    try:
+                        self.callback("overflow", p, None)
+                    except Exception as e:  # noqa: BLE001
+                        log.debug("overflow callback failed: %s", e)
                     continue
                 try:
                     self.callback("removed" if a == "removed" else "changed", p, old)

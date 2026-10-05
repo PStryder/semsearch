@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import sys
 import time
 
@@ -74,7 +75,10 @@ class ExtractorRegistry:
 def clean_text(s: str) -> str:
     """Extracted text must be valid Unicode: PDF parsers can emit lone surrogates (broken
     CMaps), which cannot be encoded as UTF-8 and make the tokenizer reject the whole batch
-    ("TextEncodeInput must be Union[...]"; seen on a 125-page PDF). Replace them, and drop NULs."""
+    ("TextEncodeInput must be Union[...]"; seen on a 125-page PDF). Replace them, and drop C0
+    control characters other than tab, newline, carriage return and form feed: they carry
+    terminal escape sequences (a file could clear or retitle the user's console through the
+    CLI's excerpts) and inflate the JSON reply from the extractor child six-fold."""
     if not s:
         return s
     try:
@@ -82,7 +86,10 @@ def clean_text(s: str) -> str:
     except UnicodeEncodeError:
         # lone surrogates -> U+FFFD (a UTF-16 round trip keeps every valid character intact)
         s = s.encode("utf-16", "surrogatepass").decode("utf-16", "replace")
-    return s.replace("\x00", "") if "\x00" in s else s
+    return _C0.sub("", s)
+
+
+_C0 = re.compile(r"[\x00-\x08\x0b\x0e-\x1f\x7f]")
 
 
 def build_default_registry(cfg: Config) -> ExtractorRegistry:

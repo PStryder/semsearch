@@ -37,7 +37,7 @@ from .extract.registry import ExtractorRegistry, clean_text
 from .models import FileEntry
 from .security import (PathRejected, check_indexable, compile_excludes, display_path, file_extension, is_excluded, is_within,
                        lstat_info, normalize_path, reparse_roots, resolves_inside, root_for, suspected_secret, true_case_path)
-from .store.db import Store, file_hash, text_hash
+from .store.db import StaleChunks, Store, file_hash, text_hash
 
 log = logging.getLogger(__name__)
 
@@ -74,7 +74,8 @@ class JobCancelled(Exception):
     and is requeued at the next start (requeue_running), nothing is written."""
 
 
-PREPROCESS_VERSION = 1  # bump when chunk_text / derive_title change what gets stored for the same bytes
+PREPROCESS_VERSION = 1
+ERROR_RETRY_S = 86400.0   # an unchanged file whose extraction failed is retried at most this often  # bump when chunk_text / derive_title change what gets stored for the same bytes
 
 PRIO_USER = 1
 PRIO_WATCH = 2
@@ -148,7 +149,7 @@ class Indexer:
     def start(self) -> None:
         if self._worker and self._worker.is_alive():
             return
-        n = self.store.requeue_running()
+        n = self.store.requeue_running(self.cfg.indexing.max_attempts)
         if n:
             log.info("requeued %d jobs left running by a previous process", n)
         if not self.cfg.indexing.follow_reparse_points:
@@ -182,7 +183,7 @@ class Indexer:
         killed, which fails that job so it is retried at the next start. Returns True when every
         thread actually exited; False means the host must not wait on them (and should not
         close resources they may still be using)."""
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         self._stop.set()
         self._wake.set()
         clean = True
@@ -197,13 +198,13 @@ class Indexer:
                 if killer is not None:
                     log.warning("worker still busy on %s at shutdown; killing the extractor child", self.state.current_path)
                     killer()
-                self._worker.join(max(0.5, deadline - time.time()))
+                self._worker.join(max(0.5, deadline - time.monotonic()))
                 if self._worker.is_alive():
                     log.error("indexer worker did not stop within %.0fs (job: %s); the running job will be requeued at next start",
                               timeout, self.state.current_path)
                     clean = False
         if self._scheduler and self._scheduler.is_alive():
-            self._scheduler.join(max(0.5, deadline - time.time()))
+            self._scheduler.join(max(0.5, deadline - time.monotonic()))
             if self._scheduler.is_alive():
                 log.error("indexer scheduler did not stop within %.0fs (phase: %s)", timeout, self.state.phase)
                 clean = False
@@ -400,6 +401,12 @@ class Indexer:
                         self._wake.set()
                 if batch:
                     total += self.store.enqueue_many(batch)
+                if self._stop.is_set():
+                    # a partial enumeration must neither tombstone what it did not reach nor mark
+                    # the root as built: the next start repeats the build for this root
+                    log.info("full build interrupted by shutdown in %s; it resumes at the next start", root)
+                    self._full_requested = True
+                    return {"enqueued": total, "seconds": round(time.time() - t0, 1), "interrupted": True}
                 self._reconcile_root(root, seen)
                 cp = max_gather if max_gather else time.time()
                 self.store.set_meta(f"checkpoint:{root}", str(cp))
@@ -434,8 +441,10 @@ class Indexer:
             since = float(cp_raw) - 5.0
             max_seen = float(cp_raw)
             batch: list[tuple[str, str, int]] = []
+            interrupted = False
             for fe in src.changed_since(root, since):
                 if self._stop.is_set():
+                    interrupted = True
                     break
                 if not self._wanted(fe):
                     continue
@@ -456,6 +465,10 @@ class Indexer:
                             pass
                     filtered.append((n, op, pr))
                 total += self.store.enqueue_many(filtered)
+            if interrupted:
+                # changes arrive in path order, not time order: a partial pass has not seen every
+                # file older than max_seen, so the checkpoint stays where it was
+                break
             self.store.set_meta(f"checkpoint:{root}", str(max_seen))
         self.state.last_incremental_at = time.time()
         if total:
@@ -551,6 +564,13 @@ class Indexer:
 
     # ---------- watcher ----------
     def _on_watch_event(self, action: str, path: str, old_path: str | None = None) -> None:
+        if action == "overflow":
+            # the change buffer overflowed: events were lost, so look at the tree soon instead of
+            # waiting for the hourly reconcile
+            log.warning("watch buffer overflow under %s; scheduling a reconcile", path)
+            self._reconcile_requested = True
+            self._wake.set()
+            return
         try:
             if old_path:
                 # rename: index the new path first (move detection re-points the row), then
@@ -587,6 +607,7 @@ class Indexer:
 
     # ---------- loops ----------
     _full_requested = False
+    _reconcile_requested = False
     _policy_rescan_pending = False
     _scope_pending = False
 
@@ -646,7 +667,9 @@ class Indexer:
                     self._phase("reembed_stale")
                     self.reembed_stale()
                     last_inc = now
-                if now - last_rec >= self.cfg.indexing.reconcile_interval_s and not self.state.paused and not self._stop.is_set():
+                if (now - last_rec >= self.cfg.indexing.reconcile_interval_s or self._reconcile_requested) \
+                        and not self.state.paused and not self._stop.is_set():
+                    self._reconcile_requested = False
                     self._phase("reconcile")
                     self.reconcile()
                     last_rec = now
@@ -849,6 +872,10 @@ class Indexer:
             return row["embedding_fingerprint"] == self.fingerprint and row["n_chunks"] > 0
         if st == "secret_suspected":
             return self.cfg.indexing.skip_suspected_secrets and not is_excluded(row["display_path"], self.cfg.indexing.secret_scan_allow)
+        if st in ("error", "denied"):
+            # a file that timed out or broke the extractor is retried once a day, not on every
+            # hourly reconcile (each retry can cost minutes of CPU and a child restart)
+            return (time.time() - float(row["indexed_at"] or 0)) < ERROR_RETRY_S
         return st in ("empty", "binary", "unsupported", "too_large")
 
     # ---------- preprocessing identity ----------
@@ -1078,8 +1105,12 @@ class Indexer:
         self.state.embed_ms += embed_ms
         # the stored text_hash is the vector-reuse key (title header + text): it must describe
         # what these vectors now represent, or a later document could reuse the wrong embedding
-        self.store.set_vectors([int(c["id"]) for c in chunks_rows], vectors, int(row["id"]), self.fingerprint,
-                               text_hashes=[text_hash(c.for_embedding) for c in chunks])
+        try:
+            self.store.set_vectors([int(c["id"]) for c in chunks_rows], vectors, int(row["id"]), self.fingerprint,
+                                   text_hashes=[text_hash(c.for_embedding) for c in chunks])
+        except StaleChunks:
+            log.info("re-embed of %s skipped: the document changed or was removed meanwhile", path_norm)
+            return "stale"
         self.state.chunks_embedded += n_new
         self.state.chunks_reused += n_reused
         self.state.recent.append((time.time(), 1, len(chunks)))

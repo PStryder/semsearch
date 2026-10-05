@@ -74,10 +74,10 @@ def _print_results(res: dict, verbose: bool) -> None:
         if sc.get("windows_rank") is not None:
             comp.append(f"win {sc['windows_rank']:.2f}")
         mod = h.get("modified") or ""
-        print(f"\n{i:2d}. [{h['score']:.3f}] {h['path']}")
+        print(f"\n{i:2d}. [{h['score']:.3f}] {_safe(h['path'])}")
         print(f"    {h['match_type']:<8} {' | '.join(comp)}   {h['file_type']}  {mod}")
         if h.get("excerpt"):
-            ex = h["excerpt"].replace("\n", " ")
+            ex = _safe(h["excerpt"].replace("\n", " "))
             print(f"    {ex[:300]}")
         if verbose:
             for w in h.get("why", []):
@@ -148,6 +148,19 @@ def _roots_command(a, c, cfg, token: str | None) -> int:
         rr = c.post("/config/excludes", json={"excludes": merged})
         print(f"  exclusions: {rr.json().get('excludes') if rr.status_code < 400 else rr.text}")
     return 1 if failed else 0
+
+
+_UNSAFE = None
+
+
+def _safe(s: str) -> str:
+    """Text from files and file names, made safe for a terminal: C0/C1 controls (escape
+    sequences) and bidirectional overrides (visual spoofing) are shown as visible escapes."""
+    global _UNSAFE
+    if _UNSAFE is None:
+        import re
+        _UNSAFE = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200e\u200f\u202a-\u202e\u2066-\u2069]")
+    return _UNSAFE.sub(lambda m: f"\\u{ord(m.group()):04x}", str(s))
 
 
 def _fmt_ts(ts):

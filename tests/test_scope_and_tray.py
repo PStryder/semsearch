@@ -283,8 +283,9 @@ def test_exclusion_change_prunes_the_pending_queue(built, root, cfg):
     out = built.indexer.reconfigure([str(root)], list(cfg.excludes) + ["**/appdata-ish/**"])
     assert out["pruned_jobs"] == 50
     assert built.store.queue_stats()["pending"] == pending_before - 50
-    res = [r for _, _, r in drain(built)]
-    assert "indexed" in res and not any(p.endswith(".json") and "appdata-ish" in p for _, p, _ in [])
+    done = drain(built)
+    assert any(r == "indexed" for _, _, r in done)
+    assert not any("appdata-ish" in p for _, p, _ in done)   # no pruned job ran
     # compiled matcher agrees with is_excluded on bare and full-path patterns
     pats = ["**/appdata-ish/**", "*.pem", "**/Users/*/.*/**", "**/AppData/**"]
     m = compile_excludes(pats)

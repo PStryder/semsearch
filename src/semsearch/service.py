@@ -127,21 +127,21 @@ class ServiceRuntime:
         extractor were deliberately NOT closed under the surviving threads and the host should
         end the process (the WAL and the job queue make that safe: nothing is lost)."""
         timeout_s = timeout_s if timeout_s is not None else self.cfg.service.shutdown_timeout_s
-        t0 = time.time()
+        t0 = time.monotonic()
         deadline = t0 + timeout_s
         log.info("service stopping (budget %.0fs)", timeout_s)
         clean = True
         if self.state is not None:
             try:
                 # end-to-end deadline: the indexer gets 70% of the budget including a stuck extractor
-                clean = self.state.indexer.stop(timeout=max(3.0, (deadline - time.time()) * 0.7))
+                clean = self.state.indexer.stop(timeout=max(3.0, (deadline - time.monotonic()) * 0.7))
             except Exception as e:  # noqa: BLE001
                 log.warning("indexer stop: %s", e)
                 clean = False
         if self.server is not None:
             self.server.should_exit = True
             if self.server_thread is not None:
-                self.server_thread.join(max(1.0, deadline - time.time()))
+                self.server_thread.join(max(1.0, deadline - time.monotonic()))
                 if self.server_thread.is_alive():
                     log.warning("API thread did not exit within the budget")
                     clean = False
@@ -159,7 +159,7 @@ class ServiceRuntime:
                     killer()
                 log.warning("threads still running at the deadline: leaving the store open for the process exit (WAL is consistent)")
         self.stopped_clean = clean
-        log.info("service stopped in %.1fs (%s)", time.time() - t0, "clean" if clean else "forced")
+        log.info("service stopped in %.1fs (%s)", time.monotonic() - t0, "clean" if clean else "forced")
         return clean
 
 

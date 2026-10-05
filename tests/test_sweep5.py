@@ -387,3 +387,132 @@ def test_filtered_glob_is_not_starved_by_matches_outside_the_filter(built, root,
     assert [h["filename"] for h in r["results"]] == ["target.md"]
     r = built.retriever.search("*", "literal", 10, extensions=["yaml"])
     assert [h["filename"] for h in r["results"]] == ["report.yaml"]
+
+
+# ---------------------------------------------------------------- store integrity
+
+def test_reembed_racing_a_removal_leaves_no_orphans_and_indexing_continues(built, root, monkeypatch):
+    from semsearch.security import normalize_path
+    p = root / "gpu.txt"
+    n = normalize_path(str(p))
+    real = built.indexer._embed_chunks
+
+    def remove_while_embedding(chunks):
+        out = real(chunks)
+        built.indexer.remove_path(str(p))       # the scope sweep / API removes it meanwhile
+        return out
+    monkeypatch.setattr(built.indexer, "_embed_chunks", remove_while_embedding)
+    assert built.indexer._reembed(n) == "stale"
+    monkeypatch.setattr(built.indexer, "_embed_chunks", real)
+    orphans = built.store.conn.execute("SELECT count(*) FROM vec_chunks WHERE rowid NOT IN (SELECT id FROM chunks)").fetchone()[0]
+    assert orphans == 0
+    write(str(root / "after.md"), "# after\n\nindexing still works after the race\n")
+    built.indexer.index_path(str(root / "after.md"))
+    assert [r for _, _, r in drain(built)] == ["indexed"]
+
+
+def test_an_orphan_vector_at_a_reused_chunk_id_does_not_wedge_indexing(built, root):
+    import numpy as np
+    from semsearch.store.db import vec_to_blob
+    nxt = built.store.conn.execute("SELECT coalesce(max(id), 0) + 1 FROM chunks").fetchone()[0]
+    built.store.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (nxt, vec_to_blob(np.zeros(built.store.dim, dtype=np.float32))))
+    write(str(root / "next.md"), "# next\n\nthe next document gets the reused id\n")
+    built.indexer.index_path(str(root / "next.md"))
+    assert [r for _, _, r in drain(built)] == ["indexed"]
+    built.store.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (10 ** 9, vec_to_blob(np.zeros(built.store.dim, dtype=np.float32))))
+    assert built.store.remove_orphan_vectors() == 1
+
+
+def test_wipe_is_atomic_and_keeps_the_cache_dtype(store_factory, monkeypatch):
+    import numpy as np
+    from semsearch.models import Chunk
+    from semsearch.store.db import Store
+    s = store_factory()
+    s.cache_dtype = "float16"
+    now = time.time()
+    s.write_document(dict(path="c:\\r\\a.txt", display_path="A", root="c:\\r", filename="a.txt", extension=".txt", size=1, mtime=now,
+                          ctime=now, file_id="1", volume_serial="1", content_hash="h", extract_status="ok", extract_method="text",
+                          text_chars=1, indexed_at=now, last_seen=now, source="fs", missing_since=None, title="t"),
+                     [Chunk(0, 0, 5, "rivers")], np.eye(4, dtype=np.float32)[:1], s.fingerprint)
+    v0 = s.version
+    real_execute = s.conn.execute
+    calls = {"n": 0}
+
+    class Boom(Exception):
+        pass
+
+    class ConnProxy:
+        def __getattr__(self, k):
+            return getattr(s.__dict__["_real_conn"], k)
+
+        def execute(self, sql, *a):
+            if sql.startswith("DELETE FROM documents"):
+                raise Boom()
+            return real_execute(sql, *a)
+    s._real_conn = s.conn
+    s.conn = ConnProxy()
+    with pytest.raises(Boom):
+        s.wipe()
+    s.conn = s._real_conn
+    assert s.version == v0                                            # no invalidation for a wipe that did not happen
+    assert s.count_documents() == 1 and s.conn.execute("SELECT count(*) FROM chunks").fetchone()[0] == 1   # rolled back whole
+    s.wipe()
+    assert s.count_documents() == 0 and s.version > v0 and s.cache.dtype == np.float16
+
+
+def test_interrupted_full_build_writes_no_checkpoint(built, root, tmp_path, cfg):
+    other = tmp_path / "second"
+    for i in range(5):
+        write(str(other / f"f{i}.md"), f"# f{i}\n")
+    cfg.roots = [root, other]
+    built.indexer.roots = cfg.normalized_roots()
+    for r in built.indexer.roots:
+        built.store.set_meta(f"checkpoint:{r}", None)
+    built.indexer._stop.set()
+    built.indexer.state.running = True
+    try:
+        out = built.indexer.full_build()
+    finally:
+        built.indexer._stop.clear()
+        built.indexer.state.running = False
+    from semsearch.security import normalize_path
+    assert out.get("interrupted") and built.indexer._full_requested
+    assert built.store.get_meta(f"checkpoint:{normalize_path(str(other))}") is None
+
+
+def test_interrupted_incremental_keeps_the_old_checkpoint(built, root):
+    from semsearch.security import normalize_path
+    r = normalize_path(str(root))
+    built.store.set_meta(f"checkpoint:{r}", str(time.time() - 3600))
+    before = built.store.get_meta(f"checkpoint:{r}")
+    write(str(root / "new.md"), "# new\n")
+    built.indexer._stop.set()
+    try:
+        built.indexer.incremental(force=True)
+    finally:
+        built.indexer._stop.clear()
+    assert built.store.get_meta(f"checkpoint:{r}") == before
+
+
+def test_watch_overflow_schedules_a_reconcile(built):
+    built.indexer._reconcile_requested = False
+    built.indexer._on_watch_event("overflow", "C:\\root", None)
+    assert built.indexer._reconcile_requested is True
+
+
+def test_response_cache_survives_concurrent_searches(built):
+    built.retriever._cache_size = 2
+    errors = []
+
+    def hammer(i):
+        try:
+            for k in range(300):
+                built.retriever.search(f"gpu {k % 7} {i}", "literal", 3)
+        except Exception as e:  # noqa: BLE001
+            errors.append(e)
+    ts = [threading.Thread(target=hammer, args=(i,)) for i in range(6)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert errors == []

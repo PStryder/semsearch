@@ -235,6 +235,10 @@ class VectorCache:
             return [(int(self.ids[i]), float(sims[i])) for i in idx if not self.deleted[i]]
 
 
+class StaleChunks(Exception):
+    """set_vectors was given chunk ids that no longer belong to the document."""
+
+
 class _Transaction:
     """BEGIN/COMMIT with deferred side effects: the vector cache and the version counter are
     updated only after a successful COMMIT; a rollback leaves both untouched."""
@@ -371,6 +375,18 @@ class Store:
     def _vec_table_exists(self) -> bool:
         r = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks'").fetchone()
         return r is not None
+
+    def remove_orphan_vectors(self) -> int:
+        """Delete vectors whose chunk no longer exists (left by a crash or by older versions)."""
+        if not self._vec_table_exists():
+            return 0
+        with self.lock, self._tx() as tx:
+            orphan = [int(r[0]) for r in self.conn.execute("SELECT rowid FROM vec_chunks WHERE rowid NOT IN (SELECT id FROM chunks)")]
+            for i in range(0, len(orphan), 500):
+                part = orphan[i:i + 500]
+                self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
+            tx.removed += orphan
+        return len(orphan)
 
     def _init_cache(self) -> None:
         if not self.use_cache or not self.dim:
@@ -614,6 +630,15 @@ class Store:
             ids.append(int(cur.lastrowid))
         if vectors is not None and len(ids):
             assert vectors.shape[0] == len(ids)
+            if self._vec_table_exists():
+                # a leftover vector at a reused chunk id (crash, older versions) must not wedge indexing
+                for i in range(0, len(ids), 500):
+                    part = ids[i:i + 500]
+                    orphan = [int(r[0]) for r in self.conn.execute(
+                        f"SELECT rowid FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)]
+                    if orphan:
+                        self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(orphan))})", orphan)
+                        tx.removed += orphan
             for cid, v in zip(ids, vectors):
                 self.conn.execute("INSERT INTO vec_chunks(rowid, embedding) VALUES(?, ?)", (cid, vec_to_blob(v)))
             tx.added.append((ids, vectors))
@@ -645,6 +670,13 @@ class Store:
         chunks' reuse keys in the same transaction so they match the new embedding input."""
         with self.lock, self._tx() as tx:
             ids = [int(c) for c in chunk_ids]
+            # the embedding ran without the lock: if the document was removed or rewritten
+            # meanwhile, these ids are gone or belong to another document now (SQLite reuses
+            # INTEGER PRIMARY KEY values); writing them would leave orphan vectors that collide
+            # with every later chunk insert. Write nothing; the caller's job is moot.
+            current = [int(r[0]) for r in self.conn.execute("SELECT id FROM chunks WHERE doc_id=? ORDER BY ordinal", (doc_id,))]
+            if sorted(current) != sorted(ids):
+                raise StaleChunks(f"document {doc_id} changed while it was being re-embedded")
             for i in range(0, len(ids), 500):
                 part = ids[i:i + 500]
                 self.conn.execute(f"DELETE FROM vec_chunks WHERE rowid IN ({','.join('?' * len(part))})", part)
@@ -765,15 +797,22 @@ class Store:
             if not r:
                 return
             state = "failed" if r[0] >= max_attempts else "pending"
-            self.conn.execute("UPDATE jobs SET state=?, error=?, updated_at=? WHERE id=?", (state, error[:1000], time.time(), job_id))
+            self.conn.execute("UPDATE jobs SET state=?, error=?, dirty=0, updated_at=? WHERE id=?", (state, error[:1000], time.time(), job_id))
 
     def failed_jobs(self, limit: int = 50) -> list[dict]:
         rows = self._r().execute("SELECT path, op, attempts, error, updated_at FROM jobs WHERE state='failed' ORDER BY updated_at DESC LIMIT ?", (int(limit),)).fetchall()
         return [dict(r) for r in rows]
 
-    def requeue_running(self) -> int:
+    def requeue_running(self, max_attempts: int | None = None) -> int:
+        """Jobs left `running` by a previous process go back to pending, unless they have already
+        been picked up max_attempts times: a file that crashes or hangs the whole service would
+        otherwise loop across restarts forever."""
         with self.lock:
-            cur = self.conn.execute("UPDATE jobs SET state='pending', updated_at=? WHERE state='running'", (time.time(),))
+            now = time.time()
+            if max_attempts:
+                self.conn.execute("UPDATE jobs SET state='failed', dirty=0, error='interrupted ' || attempts || ' times (crash or forced stop while processing)', "
+                                  "updated_at=? WHERE state='running' AND attempts >= ?", (now, int(max_attempts)))
+            cur = self.conn.execute("UPDATE jobs SET state='pending', dirty=0, updated_at=? WHERE state='running'", (now,))
             return cur.rowcount
 
     def retry_failed(self) -> int:
@@ -896,15 +935,17 @@ class Store:
 
     def wipe(self) -> None:
         """Delete all documents/chunks/vectors/jobs (keeps schema and model binding)."""
-        with self.lock:
-            self.version += 1
+        # one transaction: a crash midway must not leave documents whose chunks are gone (they
+        # would look unchanged and never be re-indexed); the version bump comes with the COMMIT
+        # so a search running during the wipe cannot be cached under the post-wipe version
+        with self.lock, self._tx():
             self.conn.execute("DELETE FROM chunks")
             self.conn.execute("DELETE FROM documents")
             if self._vec_table_exists():
                 self.conn.execute("DELETE FROM vec_chunks")
             self.conn.execute("DELETE FROM jobs")
             self.conn.execute("DELETE FROM errors")
-            for k in [r[0] for r in self.conn.execute("SELECT key FROM meta WHERE key LIKE 'checkpoint:%'")]:
-                self.conn.execute("DELETE FROM meta WHERE key=?", (k,))
+            self.conn.execute("DELETE FROM meta WHERE key LIKE 'checkpoint:%'")
+        with self.lock:
             if self.cache is not None:
-                self.cache = VectorCache(self.dim or 0)
+                self.cache = VectorCache(self.dim or 0, dtype=self.cache_dtype)

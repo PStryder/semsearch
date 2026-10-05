@@ -169,7 +169,11 @@ def test_forced_stop_kills_the_extractor_child(cfg, monkeypatch):
         assert rt.stop() is False
         assert killed == [1]
     finally:
+        monkeypatch.undo()                 # the REAL stop, so no worker outlives the test
         rt.state.indexer.stop(timeout=5)
+        if rt.server is not None:
+            rt.server.should_exit = True
+            rt.server_thread.join(5)
         rt.state.close_without_indexer()
 
 

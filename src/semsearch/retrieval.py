@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ class Retriever:
         self.windows = windows
         self.roots = cfg.normalized_roots()
         self._cache: OrderedDict[tuple, dict[str, Any]] = OrderedDict()
+        self._cache_lock = threading.Lock()
         self._cache_size = cache_size
         self._windows_empty_streak = 0
         self._windows_paused_until = 0.0
@@ -85,16 +87,19 @@ class Retriever:
         """Repeated identical queries are served from a small cache that is invalidated by any
         index mutation (store.version). ``cache=False`` bypasses it (benchmarks)."""
         key = (query, mode, limit, tuple(roots or ()), tuple(extensions or ()), self.store.version, self.cfg.retrieval.fusion)
-        hit = self._cache.get(key) if cache else None
+        with self._cache_lock:  # the API serves searches from a thread pool
+            hit = self._cache.get(key) if cache else None
+            if hit is not None:
+                self._cache.move_to_end(key)
         if hit is not None:
-            self._cache.move_to_end(key)
             out = dict(hit)
             out["cached"] = True
             return out
         out = self._search(query, mode, limit, roots, extensions)
-        self._cache[key] = out
-        if len(self._cache) > self._cache_size:
-            self._cache.popitem(last=False)
+        with self._cache_lock:
+            self._cache[key] = out
+            while len(self._cache) > self._cache_size:
+                self._cache.popitem(last=False)
         return out
 
     def _search(self, query: str, mode: str | None, limit: int, roots: list[str] | None, extensions: list[str] | None) -> dict[str, Any]:

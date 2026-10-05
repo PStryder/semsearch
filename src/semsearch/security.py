@@ -100,28 +100,50 @@ def file_extension(path: str) -> str:
 _SECRET_PATTERNS: list[tuple[str, re.Pattern]] = [
     ("private_key_block", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY(?: BLOCK)?-----")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
+    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,}\b")),  # before openai_key: sk-ant- also matches the broader sk- shape
     ("openai_key", re.compile(r"\bsk-(?:proj-|svcacct-)?[A-Za-z0-9_-]{32,}\b")),
-    ("anthropic_key", re.compile(r"\bsk-ant-[A-Za-z0-9_-]{32,}\b")),
     ("github_token", re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{36,}\b|\bgithub_pat_[A-Za-z0-9_]{60,}\b")),
     ("slack_token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}\b")),
     ("stripe_key", re.compile(r"\b[sr]k_live_[A-Za-z0-9]{20,}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
     ("google_oauth_client_secret", re.compile(r"\"client_secret\"\s*:\s*\"[A-Za-z0-9_-]{20,}\"")),
     ("service_account_key", re.compile(r"\"private_key\"\s*:\s*\"-----BEGIN")),
-    ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{20,}\.eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b")),
     ("generic_assignment", re.compile(r"(?i)\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret|password)\b\s*[:=]\s*[\"']?[A-Za-z0-9+/_\-]{24,}[\"']?")),
 ]
+
+
+# anchored at the START of a token run (lookbehind): without it, finditer retries at every
+# position inside a long run, which is O(n^2) again
+_DOTTED_RUN = re.compile(r"(?<![A-Za-z0-9_.-])[A-Za-z0-9_-]{20,}+(?:\.[A-Za-z0-9_-]{20,}+){2,}+")
+
+
+def _has_jwt(text: str) -> bool:
+    """A JWT: three or more dot-separated base64url segments, the first two starting with
+    "eyJ" (a JSON object). Found by one linear pass over maximal dotted runs: a regex anchored
+    on "eyJ" restarts at every occurrence inside a run, which is O(n^2) on "eyJ-eyJ-..."
+    (34 s for 400 KB, measured)."""
+    for m in _DOTTED_RUN.finditer(text):
+        segs = m.group().split(".")
+        for i in range(len(segs) - 2):
+            a, b, c = segs[i], segs[i + 1], segs[i + 2]
+            k = a.rfind("eyJ")
+            if k >= 0 and len(a) - k >= 23 and b.startswith("eyJ") and len(b) >= 23 and len(c) >= 20:
+                return True
+    return False
 
 
 def suspected_secret(text: str, max_scan_chars: int = 400_000) -> str | None:
     """Name of the first credential pattern found in text, or None. Deliberately conservative:
     the generic rule needs an assignment to a 24+ character opaque literal, so prose and
-    ordinary code do not trip it."""
+    ordinary code do not trip it. Every rule is linear in the input (tested on adversarial
+    payloads): this runs in the service process, outside the extractor's timeout."""
     sample = text[:max_scan_chars]
     for name, pat in _SECRET_PATTERNS:
+        if name == "generic_assignment" and _has_jwt(sample):
+            return "jwt"
         if pat.search(sample):
             return name
-    return None
+    return "jwt" if _has_jwt(sample) else None
 
 
 def compile_excludes(patterns: list[str]):

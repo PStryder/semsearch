@@ -78,8 +78,10 @@ def test_failed_jobs_appear_in_status_and_errors(built, cfg, root, monkeypatch):
     with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         body = c.get("/errors").json()
         assert body["failed_jobs"][0]["path"].endswith("poison.md")
-        assert c.get("/errors", params={"stage": "policy"}).json()["errors"] == [] or all(e["stage"] == "policy" for e in c.get("/errors", params={"stage": "policy"}).json()["errors"])
-        assert "crawl backlog" in c.get("/status").json()["windows_search"].get("note", "crawl backlog")  # wording present when Windows is available
+        errs_all = c.get("/errors").json()["errors"]
+        policy = c.get("/errors", params={"stage": "policy"}).json()["errors"]
+        assert all(e["stage"] == "policy" for e in policy)
+        assert len(policy) == sum(1 for e in errs_all if e["stage"] == "policy")   # the filter neither drops nor adds
 
 
 # ---------------------------------------------------------------- adaptive Windows relevance

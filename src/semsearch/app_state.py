@@ -121,6 +121,9 @@ class AppState:
         log.info("embedding provider ready in %.1fs (%s)", time.perf_counter() - t0, self.embedder.fingerprint)
         self.store, self.store_info = open_store_with_recovery(cfg)
         action = self.store.ensure_vectors(self.embedder.fingerprint, self.embedder.dim, cfg.embedding.on_model_change)
+        orphans = self.store.remove_orphan_vectors()
+        if orphans:
+            log.warning("removed %d orphan vectors (no matching chunk; left by a crash or an older version)", orphans)
         if action == "reset":
             log.warning("vectors were reset because the embedding model changed; re-embedding will run in the background")
         log.info("store: %s schema v%s, %d documents, fingerprint %s", self.store.path, self.store_info["schema_version"],
@@ -195,7 +198,8 @@ class AppState:
                                 excludes=new_excl if excludes is not None else None)
         out = self.indexer.reconfigure(new_roots, new_excl)
         self.retriever.roots = self.cfg.normalized_roots()
-        self.retriever._cache.clear()
+        with self.retriever._cache_lock:
+            self.retriever._cache.clear()
         out["config"] = str(self.cfg.source_path) if self.cfg.source_path else None
         return out
 

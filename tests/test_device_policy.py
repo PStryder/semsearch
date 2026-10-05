@@ -56,6 +56,12 @@ def test_bulk_mode_follows_full_build_and_queue_depth(app, cfg):
     prov.calls.clear()
     (cfg.roots[0] / "gpu.txt").write_text("GPU memory architecture, updated with HBM notes.\n", encoding="utf-8")
     app.indexer.index_path(str(cfg.roots[0] / "gpu.txt"))
-    app.indexer._set_bulk(app.store.queue_stats()["pending"] > cfg.embedding.bulk_threshold)
-    drain(app)
+    app.indexer.start()   # the WORKER decides the mode, as in production
+    try:
+        import time
+        deadline = time.time() + 15
+        while time.time() < deadline and (app.store.queue_stats()["pending"] or app.store.queue_stats()["running"] or not prov.calls):
+            time.sleep(0.05)
+    finally:
+        app.indexer.stop()
     assert prov.calls and all(m == "steady" for m, _ in prov.calls)
