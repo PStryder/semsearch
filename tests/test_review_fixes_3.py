@@ -84,7 +84,7 @@ def test_document_endpoint_refuses_paths_outside_roots(built, cfg, root, tmp_pat
                                     filename="secret.md", extension=".md", size=10, mtime=now, ctime=now, file_id="9", volume_serial="9", content_hash="x",
                                     extract_status="ok", extract_method="text", text_chars=10, indexed_at=now, last_seen=now, source="fs", missing_since=None, title="t"),
                                [Chunk(0, 0, 10, "should never be served")], None, None)
-    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1") as c:
+    with TestClient(create_app(cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         assert c.get("/document", params={"path": str(other / "secret.md"), "chunks": "true"}).status_code == 404
         assert c.get("/document", params={"path": str(root / "gpu.txt")}).status_code == 200
         assert all(h["filename"] != "secret.md" for h in c.post("/search", json={"query": "never be served", "mode": "literal"}).json()["results"])

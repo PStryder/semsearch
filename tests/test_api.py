@@ -15,8 +15,13 @@ def client(built, cfg):
 def test_maintenance_endpoints_require_admin_token(built, cfg, root):
     app = create_app(cfg, state=built)
     with TestClient(app, base_url="http://127.0.0.1") as c:  # no token
-        assert c.post("/search", json={"query": "gpu"}).status_code == 200
-        assert c.get("/status").status_code == 200 and c.get("/stats").status_code == 200
+        # reads are gated by default too (api.read_token defaults to true); /health stays open
+        assert c.get("/health").status_code == 200
+        for path in ("/status", "/stats", "/errors", "/config", "/config/windows-scope", "/search?q=gpu", "/document?path=x"):
+            assert c.get(path).status_code == 403, path
+        assert c.post("/search", json={"query": "gpu"}).status_code == 403
+        assert c.get("/search?q=gpu", headers={"x-semsearch-token": "wrong" * 16}).status_code == 403
+        assert c.get("/search?q=gpu", headers={"x-semsearch-token": built.admin_token}).status_code == 200
         for path, body in [("/index/path", {"path": str(root)}), ("/remove/path", {"path": str(root)}), ("/reindex", {"full": True}),
                            ("/indexer/pause", None), ("/indexer/resume", None), ("/indexer/retry-failed", None),
                            ("/indexer/incremental", None), ("/indexer/reconcile", None)]:

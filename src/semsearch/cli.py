@@ -36,8 +36,14 @@ SUBCOMMANDS = {"query", "status", "health", "stats", "errors", "devices", "reind
 
 
 def _client(base: str, token: str | None = None):
+    """HTTP client for the service. The admin token is attached only after verifying that the
+    process listening on <base> is the SemSearch service (clientauth); otherwise it is withheld
+    with a warning, and the request goes out without it."""
     import httpx
-    headers = {"x-semsearch-token": token} if token else {}
+    from .clientauth import token_headers
+    headers, warning = token_headers(base, token)
+    if warning:
+        print(f"semsearch: {warning}", file=sys.stderr)
     return httpx.Client(base_url=base, timeout=120.0, headers=headers)
 
 

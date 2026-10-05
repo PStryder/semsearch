@@ -108,7 +108,7 @@ class ApiConfig(BaseModel):
     # On a machine with several interactive users: also require the admin token for search, /document,
     # /status, /stats and /errors (only /health stays open). The token file is readable by the operator
     # account only, so other local accounts cannot read indexed text through the loopback API.
-    read_token: bool = False
+    read_token: bool = True
     # The operator's profile directory (the service has no user profile of its own); used to
     # narrow Windows' "all users" scope rule to this user's folders. Set by the installer.
     operator_profile: str | None = None
@@ -295,8 +295,13 @@ def _candidate_paths(explicit: str | os.PathLike | None) -> list[Path]:
     env = os.environ.get("SEMSEARCH_CONFIG")
     if env:
         c.append(Path(env))
-    c.append(Path.cwd() / "semsearch.yaml")
-    c.append(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "semsearch" / "semsearch.yaml")
+    # a semsearch.yaml in the CURRENT folder is a development convenience; on a machine with the
+    # service installed it is never picked up implicitly (a cloned repo or unzipped folder could
+    # otherwise point the CLI at a hostile server; it would not get the token, see clientauth,
+    # but it also must not silently change what the CLI talks to)
+    if not machine_config_path().is_file():
+        c.append(Path.cwd() / "semsearch.yaml")
+        c.append(Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "semsearch" / "semsearch.yaml")
     c.append(machine_config_path())  # the service install
     return c
 

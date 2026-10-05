@@ -36,11 +36,16 @@ class SentenceTransformersProvider:
         if os.path.isdir(model):
             import hashlib
             h = hashlib.blake2b(digest_size=8)
-            for name in sorted(os.listdir(model)):
-                p = os.path.join(model, name)
-                if os.path.isfile(p):
-                    h.update(name.encode("utf-8"))
-                    h.update(str(os.path.getsize(p)).encode("ascii"))
+            # every file's CONTENT (recursively, in a stable order): names + sizes would miss
+            # replaced weights of equal size
+            for dp, dn, fn in os.walk(model):
+                dn.sort()
+                for name in sorted(fn):
+                    p = os.path.join(dp, name)
+                    h.update(os.path.relpath(p, model).replace("\\", "/").encode("utf-8"))
+                    with open(p, "rb") as f:
+                        for block in iter(lambda: f.read(1 << 20), b""):
+                            h.update(block)
             return "local-" + h.hexdigest()
         try:
             from huggingface_hub import snapshot_download

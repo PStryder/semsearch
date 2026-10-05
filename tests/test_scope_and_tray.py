@@ -138,7 +138,10 @@ def test_add_and_remove_root_live(built, root, tmp_path, cfg):
     cfg.source_path = cfg_file
     other = tmp_path / "other"
     write(str(other / "zebra.md"), "# Zebra\n\nthe striped zebra document\n")
+    from conftest import grant_self
     with _client(built, built.admin_token) as c:
+        assert c.post("/config/roots", json={"add": str(other)}).status_code == 403  # no explicit grant yet
+        grant_self(other)
         assert c.post("/config/roots", json={"add": str(other)}).status_code == 200
         assert c.post("/config/roots", json={"add": str(tmp_path / "nope")}).status_code == 400
         d = c.get("/config").json()
@@ -159,8 +162,8 @@ def test_add_and_remove_root_live(built, root, tmp_path, cfg):
 def test_root_changes_need_admin_and_excludes_apply_live(built, root, cfg):
     with _client(built) as c:
         assert c.post("/config/roots", json={"add": str(root)}).status_code == 403
-        assert c.get("/config").status_code == 200
-        assert c.get("/ui").status_code == 200 and "SemSearch" in c.get("/ui").text
+        assert c.get("/config").status_code == 403  # reads are gated by default
+        assert c.get("/ui").status_code == 200 and "SemSearch" in c.get("/ui").text  # the static page itself is not
     with _client(built, built.admin_token) as c:
         r = c.post("/config/excludes", json={"excludes": list(cfg.excludes) + ["**/sub/**"]})
         assert r.status_code == 200

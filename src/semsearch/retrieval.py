@@ -134,6 +134,8 @@ class Retriever:
                 continue
             if self.roots and not is_within(d["display_path"], self.roots):
                 continue  # belt and braces: never surface a document outside the configured roots
+            if self._excluded(d["display_path"]):
+                continue  # a new exclusion applies immediately, before the background sweep removes the row
             if not self._doc_passes(d, root_filter, ext_filter):
                 continue
             kept.append(c)
@@ -183,6 +185,14 @@ class Retriever:
         quoted = ['"' + t.replace('"', '""') + '"' for t in terms]
         return (" AND " if conjunctive else " OR ").join(quoted)
 
+    def _excluded(self, path: str) -> bool:
+        ex = self.cfg.excludes
+        key = tuple(ex)
+        if getattr(self, "_excl_key", None) != key:
+            from .security import compile_excludes
+            self._excl_key, self._excl_match = key, compile_excludes(list(ex))
+        return self._excl_match(path)
+
     @staticmethod
     def _doc_passes(d, root_filter: list[str] | None, ext_filter: list[str] | None) -> bool:
         if root_filter and not is_within(d["display_path"], root_filter):
@@ -197,12 +207,9 @@ class Retriever:
         k_chunks = rc.candidate_chunks
         k_docs = rc.candidate_docs
         if glob_mode:
-            # glob results are a complete list by construction (no ranking), so filtering after is exact
-            found = self.store.filename_glob(query, limit=k_docs * 20)
-            if root_filter or ext_filter:
-                docs = self.store.get_documents(i for i, _ in found)
-                found = [(i, fn) for i, fn in found if i in docs and self._doc_passes(docs[i], root_filter, ext_filter)]
-            for doc_id, fn in found[: k_docs * 2]:
+            # the filter is part of the query: a LIMIT taken before filtering would miss matches
+            found = self.store.filename_glob(query, limit=k_docs * 2, roots=root_filter, extensions=ext_filter)
+            for doc_id, fn in found:
                 c = cands.setdefault(doc_id, _Cand(doc_id))
                 c.filename = 1.0
                 c.lexical = 1.0

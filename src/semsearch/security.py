@@ -12,6 +12,7 @@ import fnmatch
 import os
 import re
 import stat
+import sys
 import time
 from dataclasses import dataclass
 
@@ -203,7 +204,10 @@ def lstat_info(path: str) -> StatInfo:
 
 
 _reparse_dir_cache: dict[str, tuple[bool, float]] = {}
-REPARSE_CACHE_TTL_S = 120.0  # a directory can be replaced by a junction after it was checked
+# No caching: a path-keyed cache with any lifetime lets a directory that was checked once be
+# swapped for a junction and trusted until the entry expires (reproduced by probe). An lstat per
+# ancestor is cheap next to hashing and extracting the file.
+REPARSE_CACHE_TTL_S = 0.0
 
 
 def reset_reparse_cache() -> None:
@@ -214,7 +218,7 @@ def is_reparse_dir(path: str) -> bool:
     """Cached (time-bounded) lstat: is this directory a reparse point?"""
     now = time.time()
     ent = _reparse_dir_cache.get(path)
-    if ent is not None and now - ent[1] < REPARSE_CACHE_TTL_S:
+    if ent is not None and REPARSE_CACHE_TTL_S > 0 and now - ent[1] < REPARSE_CACHE_TTL_S:
         return ent[0]
     try:
         attrs = getattr(os.lstat(path), "st_file_attributes", 0)
@@ -325,3 +329,61 @@ def walk_safe(root: str, roots: list[str], excludes: list[str], follow_reparse: 
                     stack.append(p)
                 elif entry.is_file(follow_symlinks=follow_reparse):
                     yield p, entry
+
+
+def resolves_inside(path: str, roots: list[str], follow_reparse: bool = False) -> bool:
+    """Containment of the path as the filesystem resolves it NOW (junctions and symlinks
+    anywhere in the chain followed): the resolved path must lie inside a configured root, and
+    unless reparse points may be followed, it must be the same path as the one given."""
+    try:
+        real = os.path.realpath(path)
+    except OSError:
+        return False
+    if real.startswith("\\\\?\\"):
+        real = real[4:]
+    if not is_within(real, roots):
+        return False
+    if not follow_reparse and normalize_path(real) != normalize_path(path):
+        return False
+    return True
+
+
+FILE_READ_DATA = 0x0001
+
+
+def _process_sid():
+    import win32api
+    import win32security
+    tok = win32security.OpenProcessToken(win32api.GetCurrentProcess(), win32security.TOKEN_QUERY)
+    return win32security.GetTokenInformation(tok, win32security.TokenUser)[0]
+
+
+def explicit_grant_problem(path: str) -> str | None:
+    """None when <path> is an existing local directory whose DACL carries an EXPLICIT (not
+    inherited) allow entry granting this process's own account read access; otherwise the
+    reason. UNC and device paths are refused: roots are local folders."""
+    p = display_path(path)
+    if p.startswith("\\\\") or p.startswith("//"):
+        return f"network and device paths cannot be roots: {p}"
+    if not os.path.isabs(p) or not os.path.isdir(p):
+        return f"not an existing local directory: {p}"
+    if sys.platform != "win32":
+        return None
+    import win32security
+    try:
+        sd = win32security.GetFileSecurity(p, win32security.DACL_SECURITY_INFORMATION)
+        dacl = sd.GetSecurityDescriptorDacl()
+        me = _process_sid()
+    except Exception as e:  # noqa: BLE001
+        return f"cannot read the permissions of {p}: {e}"
+    if dacl is None:
+        return f"{p} has no DACL (open to everyone); grant read explicitly before indexing it"
+    for i in range(dacl.GetAceCount()):
+        ace = dacl.GetAce(i)
+        (ace_type, ace_flags), mask, sid = ace[0], ace[1], ace[2]
+        if ace_type != win32security.ACCESS_ALLOWED_ACE_TYPE or ace_flags & win32security.INHERITED_ACE:
+            continue
+        if sid == me and mask & FILE_READ_DATA:
+            return None
+    return (f"{p} has no explicit read grant for this service's account; add the folder with `semsearch roots add` "
+            f"or the tray (they grant it as the folder's owner)")

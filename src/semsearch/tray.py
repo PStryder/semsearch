@@ -66,9 +66,13 @@ class TrayApp:
 
     # ---- service I/O ----
     def _client(self):
+        """Token attached only when the listener on the configured port is the SemSearch service
+        process: the tray polls every 10 s, and a token handed to whoever holds the port while
+        the service restarts would be a standing leak."""
         import httpx
-        tok = self.token()
-        return httpx.Client(base_url=self.base, timeout=30.0, headers={"x-semsearch-token": tok} if tok else {})
+        from .clientauth import token_headers
+        headers, _warning = token_headers(self.base, self.token(), self.cfg.service.name)
+        return httpx.Client(base_url=self.base, timeout=30.0, headers=headers)
 
     def token(self) -> str | None:
         try:
@@ -119,8 +123,18 @@ class TrayApp:
 
     # ---- actions ----
     def open_settings(self, *_):
-        tok = self.token()
-        webbrowser.open(f"{self.base}/ui" + (f"#token={tok}" if tok and self.cfg.api.read_token else ""))
+        """Open the settings page with a single-use 60 s nonce (in the URL fragment, which is
+        never sent to a server); the page trades it for a tab-scoped session. The admin token
+        itself never leaves this process."""
+        frag = ""
+        try:
+            with self._client() as c:
+                r = c.post("/ui/nonce")
+                if r.status_code < 400:
+                    frag = "#n=" + r.json()["nonce"]
+        except Exception:  # noqa: BLE001 - the page still opens; it will say it is not signed in
+            pass
+        webbrowser.open(f"{self.base}/ui{frag}")
 
     def open_logs(self, *_):
         os.startfile(str(self.cfg.log_dir))  # noqa: S606 - explorer on our own log directory

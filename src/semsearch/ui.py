@@ -34,23 +34,22 @@ ul{margin:6px 0;padding-left:20px}li{margin:3px 0}code{font-family:ui-monospace,
 <h2>Exclusions</h2><div class="card"><div class="mut">One glob per line. A pattern with <code>/</code> matches the full path (forward slashes, case-insensitive); a bare pattern such as <code>*.pem</code> matches file names only.</div>
 <textarea id="excl" spellcheck="false"></textarea><div class="row" style="margin-top:8px"><button class="primary" id="saveExcl">Save exclusions</button><button id="winScope">Show Windows Search scope</button><span id="msg"></span></div>
 <div id="scope"></div></div>
-<h2>Access token</h2><div class="card"><div class="mut">Saving exclusions needs the admin token (<code>state\admin.token</code> in the data directory). It is kept in this browser only.</div>
-<input type="text" id="tok" placeholder="paste the token (optional for reading)"></div>
+<div class="card mut" id="auth"></div>
 </main><script>
-const $=s=>document.querySelector(s);const tok=()=>$('#tok').value.trim();
-try{const h=location.hash.match(/token=([0-9a-f]+)/);if(h){localStorage.setItem('semsearch.token',h[1]);history.replaceState(null,'',location.pathname)}$('#tok').value=localStorage.getItem('semsearch.token')||''}catch(e){}
-$('#tok').addEventListener('change',()=>{try{localStorage.setItem('semsearch.token',tok())}catch(e){}});
-const H=()=>tok()?{'x-semsearch-token':tok()}:{};
+const $=s=>document.querySelector(s);
+let SESS=null;try{SESS=sessionStorage.getItem('semsearch.session')}catch(e){}
+async function signIn(){const m=location.hash.match(/n=([A-Za-z0-9_-]+)/);history.replaceState(null,'',location.pathname);if(!m)return;try{const r=await fetch('/ui/redeem',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({nonce:m[1]})});if(r.ok){SESS=(await r.json()).session;try{sessionStorage.setItem('semsearch.session',SESS)}catch(e){}}}catch(e){}}
+const H=()=>SESS?{'x-semsearch-session':SESS}:{};
 async function j(u,o){const r=await fetch(u,Object.assign({headers:Object.assign({'content-type':'application/json'},H())},o||{}));const t=await r.text();let b;try{b=JSON.parse(t)}catch(e){b={detail:t}}if(!r.ok)throw new Error(b.detail||b.error||r.status);return b}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))}
 async function status(){try{const h=await j('/health');const s=await j('/status');const ix=s.indexer||{};const q=ix.queue||{};
 $('#sub').textContent='version '+h.version+' - '+h.documents.toLocaleString()+' documents';
 $('#status').innerHTML=[['indexer',ix.running?(ix.paused?'paused':'running'):'stopped'],['queue',(q.pending||0)+' pending, '+(q.running||0)+' running, '+(q.failed||0)+' failed'],['current',ix.current_path||'-'],['watcher',ix.watcher?'active':'off'],['embedding',(ix.embedding||{}).device||''],['Windows Search',(s.windows_search&&s.windows_search.available)?('reachable, '+(s.windows_search.items||0).toLocaleString()+' items'):'unavailable'],['config',s.config_source||'']].map(([k,v])=>'<div class="mut">'+esc(k)+'</div><div>'+esc(v)+'</div>').join('')}catch(e){$('#status').innerHTML='<div class="warn">'+esc(e.message)+'</div>'}}
 async function config(){try{const c=await j('/config');$('#roots').innerHTML=c.roots.length?c.roots.map(r=>'<li><code>'+esc(r)+'</code></li>').join(''):'<li class="warn">no folders configured: nothing is indexed</li>';$('#excl').value=c.excludes.join('\n')}catch(e){$('#roots').innerHTML='<li class="warn">'+esc(e.message)+'</li>'}}
-$('#saveExcl').onclick=async()=>{$('#msg').textContent='saving...';try{const v=$('#excl').value.split('\n').map(s=>s.trim()).filter(Boolean);const r=await j('/config/excludes',{method:'POST',body:JSON.stringify({excludes:v})});$('#msg').innerHTML='<span class="ok">saved '+r.excludes+' patterns; documents now excluded are removed in the background</span>'}catch(e){$('#msg').innerHTML='<span class="warn">'+esc(e.message)+'</span>'}};
+$('#saveExcl').onclick=async()=>{$('#msg').textContent='saving...';try{const v=$('#excl').value.split('\n').map(s=>s.trim()).filter(Boolean);const r=await j('/config/excludes',{method:'POST',body:JSON.stringify({excludes:v})});$('#msg').innerHTML='<span class="ok">saved '+esc(r.excludes)+' patterns; documents now excluded are removed in the background</span>'}catch(e){$('#msg').innerHTML='<span class="warn">'+esc(e.message)+'</span>'}};
 $('#winScope').onclick=async()=>{$('#scope').textContent='reading the Windows Search scope...';try{const s=await j('/config/windows-scope');$('#scope').innerHTML='<div style="margin-top:10px"><b>Folders Windows indexes for content</b> (your profile only):<ul>'+(s.roots.map(r=>'<li><code>'+esc(r)+'</code></li>').join('')||'<li class="mut">none</li>')+'</ul><b>'+s.excludes.length+' exclusion rules</b> from Windows (first 30):<ul>'+s.excludes.slice(0,30).map(r=>'<li><code>'+esc(r)+'</code></li>').join('')+'</ul><div class="mut">Apply them from the tray (Folders &rsaquo; Use the Windows Search scope) or with <code>semsearch roots import-windows</code>.</div></div>'}catch(e){$('#scope').innerHTML='<span class="warn">'+esc(e.message)+'</span>'}};
 async function search(){const q=$('#q').value.trim();if(!q)return;$('#results').innerHTML='<div class="mut">searching...</div>';try{const r=await j('/search',{method:'POST',body:JSON.stringify({query:q,mode:$('#mode').value,limit:10})});$('#results').innerHTML=r.results.length?r.results.map(h=>'<div class="hit"><div class="p">'+esc(h.path)+' <span class="mut">'+h.score.toFixed(2)+' '+esc(h.match_type)+'</span></div><div class="x">'+esc(h.excerpt||'')+'</div></div>').join(''):'<div class="mut">no results</div>'}catch(e){$('#results').innerHTML='<div class="warn">'+esc(e.message)+'</div>'}}
 $('#go').onclick=search;$('#q').addEventListener('keydown',e=>{if(e.key==='Enter')search()});
-status();config();setInterval(status,10000);
+signIn().then(()=>{if(!SESS){$('#auth').textContent='Not signed in: open this page from the SemSearch tray icon (Open settings page).'}else{$('#auth').textContent='Signed in for this tab (session expires after 12 hours).'}status();config();setInterval(status,10000)});
 </script></body></html>
 """

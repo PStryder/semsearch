@@ -10,9 +10,10 @@ import logging
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import Literal
+from typing import Annotated, Literal
 
 import secrets
+import threading
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -29,15 +30,15 @@ log = logging.getLogger(__name__)
 
 
 class SearchRequest(BaseModel):
-    query: str
+    query: str = Field(max_length=2000)
     mode: Literal["literal", "semantic", "hybrid"] | None = None
     limit: int = Field(default=20, ge=1, le=200)
-    roots: list[str] | None = None
-    extensions: list[str] | None = None
+    roots: list[Annotated[str, Field(max_length=1000)]] | None = Field(default=None, max_length=32)
+    extensions: list[Annotated[str, Field(max_length=32)]] | None = Field(default=None, max_length=32)
 
 
 class PathRequest(BaseModel):
-    path: str
+    path: str = Field(max_length=1000)
     priority: int = Field(default=1, ge=1, le=9)
 
 
@@ -48,13 +49,20 @@ class ReindexRequest(BaseModel):
 
 
 class RootsRequest(BaseModel):
-    add: str | None = None
-    remove: str | None = None
-    set: list[str] | None = None
+    add: str | None = Field(default=None, max_length=1000)
+    remove: str | None = Field(default=None, max_length=1000)
+    set: list[Annotated[str, Field(max_length=1000)]] | None = Field(default=None, max_length=64)
+
+
+class RedeemRequest(BaseModel):
+    nonce: str = Field(max_length=200)
 
 
 class ExcludesRequest(BaseModel):
-    excludes: list[str]
+    excludes: list[Annotated[str, Field(max_length=512)]] = Field(max_length=1000)
+
+
+MAX_BODY = 1 << 20  # 1 MB: the largest legitimate body is an exclusion list
 
 
 def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
@@ -72,7 +80,7 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             if state is None:
                 app.state.st.close()
 
-    app = FastAPI(title="semsearch", version=__version__, lifespan=lifespan, docs_url="/docs", redoc_url=None)
+    app = FastAPI(title="semsearch", version=__version__, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     allowed_hosts = {"127.0.0.1", "localhost", "::1", "[::1]"}
     if cfg.api.allow_non_loopback:
@@ -91,6 +99,11 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             name = host.rsplit(":", 1)[0]
         else:
             name = host
+        cl = request.headers.get("content-length")
+        if cl is not None and (not cl.isdigit() or int(cl) > MAX_BODY):
+            return JSONResponse(status_code=413, content={"detail": "request body too large"})
+        if request.method in ("POST", "PUT", "PATCH") and cl is None:
+            return JSONResponse(status_code=411, content={"detail": "content-length required"})
         if name not in allowed_hosts:
             return JSONResponse(status_code=421, content={"detail": f"host '{host}' is not allowed; use http://127.0.0.1:{cfg.api.port}/"})
         return await call_next(request)
@@ -98,27 +111,60 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
     def st() -> AppState:
         return app.state.st
 
+    # Settings-page sessions: the tray (which can read admin.token) mints a single-use nonce that
+    # expires in 60 s; the page redeems it for a session token held only in that tab's
+    # sessionStorage and sent as a header. The admin token itself never enters a URL, browser
+    # history, a cookie (cookies on 127.0.0.1 are sent to every port) or localStorage.
+    app.state.nonces = {}    # nonce -> expiry
+    app.state.sessions = {}  # session token -> expiry
+    NONCE_TTL, SESSION_TTL = 60.0, 12 * 3600.0
+    _auth_lock = threading.Lock()
+    _scope_lock = threading.Lock()  # roots/excludes: read-modify-write + persist + apply as one step
+
+    def _expect(value: str, expected: str | None) -> bool:
+        return bool(expected) and bool(value) and secrets.compare_digest(value.encode("utf-8", "replace"), expected.encode("utf-8"))
+
+    def _admin_ok(request: Request) -> bool:
+        return _expect(request.headers.get("x-semsearch-token", ""), getattr(st(), "admin_token", None))
+
     def _token_ok(request: Request) -> bool:
-        tok = request.headers.get("x-semsearch-token", "")
-        expected = getattr(st(), "admin_token", None)
-        return bool(expected) and secrets.compare_digest(tok, expected)
+        """Admin token, or a settings-page session (reads + exclusion edits only)."""
+        if _admin_ok(request):
+            return True
+        sess = request.headers.get("x-semsearch-session", "")
+        if sess:
+            now = time.time()
+            with _auth_lock:
+                for k in [k for k, exp in app.state.sessions.items() if exp < now]:
+                    del app.state.sessions[k]
+                return any(_expect(sess, k) for k in app.state.sessions)
+        return False
 
     def require_admin(request: Request) -> None:
-        """Mutating / maintenance endpoints need the admin token from <state_dir>/admin.token.
-        Search, health, status and stats stay open to any local process unless api.read_token."""
-        if not _token_ok(request):
+        """Mutating / maintenance endpoints need the admin token from <state_dir>/admin.token
+        (or a settings-page session minted from it)."""
+        if not _admin_ok(request):
             raise HTTPException(403, "admin token required (X-SemSearch-Token; see <state_dir>/admin.token)")
 
+    def require_session_or_admin(request: Request) -> None:
+        """What the settings page may change: the exclusion list. Nothing else (no root changes,
+        backups, wipes or new nonces), so a stolen tab session cannot widen the scope or renew itself."""
+        if not _token_ok(request):
+            raise HTTPException(403, "admin token or settings-page session required")
+
     def require_read(request: Request) -> None:
-        """Read endpoints: open by default (single-user workstation); with api.read_token the same
-        token gates them, which is the mitigation for a machine shared by several local accounts
-        (the index holds text the service account could read, whoever asks)."""
-        if cfg.api.read_token and not _token_ok(request):
-            raise HTTPException(403, "token required for reads on this installation (api.read_token); see <state_dir>/admin.token")
+        """Read endpoints (search, documents, status, stats, errors, config). Gated by default
+        (api.read_token: true): the index holds text the SERVICE account could read, and without
+        the gate any local account could retrieve it through loopback. Set read_token: false only
+        on a machine with a single interactive user."""
+        if st().cfg.api.read_token and not _token_ok(request):
+            raise HTTPException(403, "token required for reads (api.read_token); see <state_dir>/admin.token")
 
     @app.get("/health")
-    def health():
+    def health(request: Request):
         s = st()
+        if s.cfg.api.read_token and not _token_ok(request):
+            return {"ok": True, "version": __version__}  # liveness only; details need the token
         return {"ok": True, "version": __version__, "uptime_s": round(time.time() - app.state.started, 1),
                 "indexer_running": s.indexer.state.running, "embedding": s.embedder.fingerprint,
                 "windows_search": s.windows is not None, "documents": s.store.count_documents()}
@@ -147,11 +193,11 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
             ws["relevance_signal"] = s.retriever.windows_rank_state()
         return {"version": __version__,
                 "indexer": s.indexer.status(), "windows_search": ws,
-                "store": {"path": str(cfg.db_path), "fingerprint": s.store.fingerprint, "dim": s.store.dim,
+                "store": {"path": str(st().cfg.db_path), "fingerprint": s.store.fingerprint, "dim": s.store.dim,
                           "schema_version": getattr(s, "store_info", {}).get("schema_version"),
                           "recovered_from_corruption": getattr(s, "store_info", {}).get("recovered_from_corruption", False)},
                 "devices": getattr(s, "device_resolution", {}),
-                "config_source": str(cfg.source_path) if cfg.source_path else None,
+                "config_source": str(st().cfg.source_path) if st().cfg.source_path else None,
                 "pid": os.getpid()}
 
     @app.get("/stats")
@@ -175,13 +221,26 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         """Consistent online copy of the index. The destination must lie under <data_dir>/backups
         (or `api.backup_dir`): the admin token is search-maintenance authority, not a licence to
         write SQLite files wherever the service account can."""
-        from .security import is_within, normalize_path
-        base = cfg.backup_dir
-        dest = os.path.abspath(os.path.join(base, req.path)) if not os.path.isabs(req.path) else os.path.abspath(req.path)
-        if not is_within(dest, [str(base)]) or normalize_path(dest) == normalize_path(str(base)):
-            raise HTTPException(403, f"backup destination must be a file under {base}")
-        if os.path.exists(dest) and not os.path.isfile(dest):
-            raise HTTPException(400, "backup destination exists and is not a file")
+        import re as _re
+        from .security import normalize_path
+        base = str(st().cfg.backup_dir)
+        name = req.path.replace("/", "\\")
+        if os.path.isabs(name):
+            if normalize_path(os.path.dirname(os.path.abspath(name))) != normalize_path(base):
+                raise HTTPException(403, f"backup destination must be a file directly in {base}")
+            name = os.path.basename(name)
+        # a plain file name: no sub-directories (a junction there would redirect the write), no
+        # stream names (x.db:ads), no device names, no traversal
+        if not _re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,120}", name) or name.endswith(".") \
+                or _re.fullmatch(r"(?i)(con|prn|aux|nul|com\d|lpt\d)(\..*)?", name):
+            raise HTTPException(403, "backup destination must be a plain file name (letters, digits, . _ -)")
+        os.makedirs(base, exist_ok=True)
+        if normalize_path(os.path.realpath(base)) != normalize_path(base):
+            raise HTTPException(403, "the backup directory resolves elsewhere (junction/symlink); refusing")
+        dest = os.path.join(base, name)
+        if os.path.lexists(dest) and (os.path.islink(dest) or not os.path.isfile(dest)
+                                      or getattr(os.lstat(dest), "st_file_attributes", 0) & 0x400):
+            raise HTTPException(400, "backup destination exists and is not a plain file")
         return st().store.backup(dest)
 
     @app.post("/index/path")
@@ -247,9 +306,9 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         `chunk_count` in the answer says how many there are)."""
         from .security import is_within, normalize_path
         s = st()
-        roots = cfg.normalized_roots()
-        if not roots or not is_within(path, roots):
-            raise HTTPException(404, "not indexed")  # same answer as unknown: never confirm paths outside the roots
+        roots = s.cfg.normalized_roots()  # the LIVE config: roots change at runtime (apply_scope)
+        if not roots or not is_within(path, roots) or s.retriever._excluded(path):
+            raise HTTPException(404, "not indexed")  # same answer as unknown: never confirm paths outside the scope
         row = s.store.get_document(normalize_path(path))
         if row is None or row["extract_status"] == "missing":
             raise HTTPException(404, "not indexed")
@@ -273,48 +332,83 @@ def create_app(cfg: Config, state: AppState | None = None) -> FastAPI:
         """Add or remove one indexed folder, or replace the whole list. Persisted into the
         configuration file and applied live (no restart). The caller must have granted the
         service account read access on a new folder beforehand (CLI/tray do)."""
-        from .security import display_path, normalize_path
+        from .security import display_path, explicit_grant_problem, normalize_path
         s = st()
-        cur = [display_path(str(r)) for r in s.cfg.roots]
-        if req.set is not None:
-            new = list(req.set)
-        else:
-            new = list(cur)
-            if req.add:
-                p = display_path(req.add)
-                if not os.path.isdir(p):
+        with _scope_lock:
+            cur = [display_path(str(r)) for r in s.cfg.roots]
+            if req.set is not None:
+                new = [display_path(x) for x in req.set]
+            else:
+                new = list(cur)
+                if req.add:
+                    p = display_path(req.add)
+                    if normalize_path(p) not in {normalize_path(x) for x in new}:
+                        new.append(p)
+                if req.remove:
+                    n = normalize_path(req.remove)
+                    new = [x for x in new if normalize_path(x) != n]
+            # every root this call ADDS must carry an explicit, non-inherited read grant for the
+            # service's own account: proof that someone with change-permission rights on that
+            # folder chose to share it (the CLI / tray place it as the folder owner). Without this
+            # the token would let anyone index any folder the service happens to be able to read.
+            curn = {normalize_path(x) for x in cur}
+            for p in new:
+                if normalize_path(p) in curn:
+                    continue
+                if not p.startswith(("\\\\", "//")) and not os.path.isdir(p):
                     raise HTTPException(400, f"not an existing directory: {p}")
-                if not os.access(p, os.R_OK):
-                    raise HTTPException(403, f"the service account cannot read {p}: grant it read access first (semsearch roots add does)")
-                if normalize_path(p) not in {normalize_path(x) for x in new}:
-                    new.append(p)
-            if req.remove:
-                n = normalize_path(req.remove)
-                new = [x for x in new if normalize_path(x) != n]
-        try:
-            return s.apply_scope(roots=new)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+                why = explicit_grant_problem(p)
+                if why:
+                    raise HTTPException(403, why)
+            try:
+                return s.apply_scope(roots=new)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
 
     @app.post("/config/excludes")
-    def config_excludes(req: ExcludesRequest, _: None = Depends(require_admin)):
-        try:
-            return st().apply_scope(excludes=req.excludes)
-        except ValueError as e:
-            raise HTTPException(400, str(e))
+    def config_excludes(req: ExcludesRequest, _: None = Depends(require_session_or_admin)):
+        with _scope_lock:
+            try:
+                return st().apply_scope(excludes=req.excludes)
+            except ValueError as e:
+                raise HTTPException(400, str(e))
 
     @app.get("/config/windows-scope")
     def windows_scope(_: None = Depends(require_read)):
         """What the Windows Search indexer covers for content (this user's profile) and what it
         excludes, translated to semsearch roots/globs. Read-only; nothing is applied."""
         from .inventory.scope import windows_scope_suggestion
-        s = windows_scope_suggestion(cfg.api.operator_profile or None)
+        s = windows_scope_suggestion(st().cfg.api.operator_profile or None)
         return {"roots": s.roots, "excludes": s.excludes, "skipped": s.skipped, "unmounted_rules": len(s.unmounted)}
+
+    @app.post("/ui/nonce")
+    def ui_nonce(_: None = Depends(require_admin)):
+        n = secrets.token_urlsafe(24)
+        with _auth_lock:
+            now = time.time()
+            for k in [k for k, exp in app.state.nonces.items() if exp < now]:
+                del app.state.nonces[k]
+            app.state.nonces[n] = now + NONCE_TTL
+        return {"nonce": n, "expires_in": NONCE_TTL}
+
+    @app.post("/ui/redeem")
+    def ui_redeem(req: RedeemRequest):
+        with _auth_lock:
+            exp = app.state.nonces.pop(req.nonce, None)  # single use, whatever the outcome
+            if exp is None or exp < time.time():
+                raise HTTPException(403, "invalid or expired nonce; reopen the settings page from the tray")
+            sess = secrets.token_urlsafe(32)
+            app.state.sessions[sess] = time.time() + SESSION_TTL
+        return {"session": sess, "expires_in": SESSION_TTL}
 
     @app.get("/ui", response_class=HTMLResponse)
     def ui_page():
         from .ui import PAGE
-        return PAGE
+        return HTMLResponse(PAGE, headers={
+            "Content-Security-Policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; "
+                                       "connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+            "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
+            "Cache-Control": "no-store"})
 
     @app.exception_handler(Exception)
     async def _unhandled(request, exc):

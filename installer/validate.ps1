@@ -6,6 +6,8 @@ $ErrorActionPreference = "Continue"
 $fail = 0
 function Check($name, $ok, $detail) { if ($ok) { Write-Host ("PASS  {0,-44} {1}" -f $name, $detail) } else { Write-Host ("FAIL  {0,-44} {1}" -f $name, $detail) -ForegroundColor Red; $script:fail++ } }
 $semsearch = "$env:ProgramFiles\SemSearch\semsearch.cmd"
+# reads are token-gated by default (api.read_token); the operator can read the token file
+$tokHdr = @{}; try { $tokHdr = @{ "x-semsearch-token" = (Get-Content "$DataDir\state\admin.token" -ErrorAction Stop).Trim() } } catch {}
 $svc = Get-Service SemSearch -ErrorAction SilentlyContinue
 Check "service installed and running" ($svc -and $svc.Status -eq 'Running') "$($svc.Status)"
 # an unelevated session cannot read another account's process command line; take the PID from the SCM instead
@@ -21,7 +23,7 @@ $listen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction Silen
 Check "listening on loopback only" ($listen -and $listen.LocalAddress -eq '127.0.0.1') "$($listen.LocalAddress):$($listen.LocalPort)"
 $rb = $null; try { Invoke-WebRequest "http://127.0.0.1:$Port/health" -Headers @{Host='evil.example'} -TimeoutSec 5 -UseBasicParsing | Out-Null } catch { $rb = $_.Exception.Response.StatusCode.value__ }
 Check "DNS-rebinding Host rejected (421)" ($rb -eq 421) "$rb"
-$st = $null; try { $st = Invoke-RestMethod "http://127.0.0.1:$Port/status" -TimeoutSec 10 } catch {}
+$st = $null; try { $st = Invoke-RestMethod "http://127.0.0.1:$Port/status" -Headers $tokHdr -TimeoutSec 10 } catch {}
 if ($st) {
   foreach ($role in @('device','bulk_device','query_device')) { $r = $st.devices.roles.$role; Check "device role $role" ($null -ne $r) "$($r.configured) -> $($r.resolved)  ($($r.why))" }
   Check "Windows Search reachable from service" ($st.windows_search.available -eq $true) "$($st.windows_search.status) items=$($st.windows_search.items)"
@@ -31,22 +33,24 @@ if ($st) {
   Check "operator can read admin token" ($null -ne $tok) "$DataDir\state\admin.token"
   $noTok = $null; try { Invoke-RestMethod -Method Post "http://127.0.0.1:$Port/indexer/pause" -TimeoutSec 5 | Out-Null } catch { $noTok = $_.Exception.Response.StatusCode.value__ }
   Check "maintenance endpoint refuses without token" ($noTok -eq 403) "$noTok"
+  $noRead = $null; try { Invoke-RestMethod "http://127.0.0.1:$Port/search?q=x" -TimeoutSec 5 | Out-Null; $noRead = 200 } catch { $noRead = $_.Exception.Response.StatusCode.value__ }
+  Check "search refuses without token (read_token)" ($noRead -eq 403) "$noRead"
   # change propagation inside the first configured root
   $root = if ($ProbeRoot) { $ProbeRoot } else { $st.indexer.roots[0] }
   if ($root -and (Test-Path $root)) {
     $dir = Join-Path $root "semsearch-validate-$PID"; New-Item -ItemType Directory -Force $dir | Out-Null
     $f = Join-Path $dir "validate_note.md"; $marker = "zq" + [guid]::NewGuid().ToString('N').Substring(0, 10)
     Set-Content $f "# Validation note`n`nThe marker is $marker and this file was created by validate.ps1.`n" -Encoding utf8
-    $found = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -TimeoutSec 10; if ($r.results.Count -and $r.results[0].filename -eq 'validate_note.md') { $found = $true; break } } catch {} }
+    $found = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -Headers $tokHdr -TimeoutSec 10; if ($r.results.Count -and $r.results[0].filename -eq 'validate_note.md') { $found = $true; break } } catch {} }
     Check "create -> searchable" $found "$([int]($i*2))s"
     Add-Content $f "`nAppended line with second marker ${marker}B.`n"
-    $found2 = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=${marker}B&mode=literal&limit=1" -TimeoutSec 10; if ($r.results.Count) { $found2 = $true; break } } catch {} }
+    $found2 = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=${marker}B&mode=literal&limit=1" -Headers $tokHdr -TimeoutSec 10; if ($r.results.Count) { $found2 = $true; break } } catch {} }
     Check "modify -> searchable" $found2 "$([int]($i*2))s"
     $f2 = Join-Path $dir "validate_note_renamed.md"; Rename-Item $f $f2
-    $moved = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -TimeoutSec 10; if ($r.results.Count -and $r.results[0].filename -eq 'validate_note_renamed.md') { $moved = $true; break } } catch {} }
+    $moved = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -Headers $tokHdr -TimeoutSec 10; if ($r.results.Count -and $r.results[0].filename -eq 'validate_note_renamed.md') { $moved = $true; break } } catch {} }
     Check "rename -> path updated" $moved "$([int]($i*2))s"
     Remove-Item -Recurse -Force $dir
-    $gone = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -TimeoutSec 10; if (-not $r.results.Count) { $gone = $true; break } } catch {} }
+    $gone = $false; for ($i = 0; $i -lt 45; $i++) { Start-Sleep 2; try { $r = Invoke-RestMethod "http://127.0.0.1:$Port/search?q=$marker&mode=literal&limit=1" -Headers $tokHdr -TimeoutSec 10; if (-not $r.results.Count) { $gone = $true; break } } catch {} }
     Check "delete -> gone from results" $gone "$([int]($i*2))s"
   } else { Check "change propagation (needs a root)" $false "no root" }
   # restart: devices must resolve identically and the index must not be rebuilt
@@ -54,13 +58,13 @@ if ($st) {
   $r = & $semsearch service restart 2>&1; $ok = $LASTEXITCODE -eq 0
   Check "service restart" $ok "$r"
   $h2 = $null; for ($i = 0; $i -lt 60; $i++) { try { $h2 = Invoke-RestMethod "http://127.0.0.1:$Port/health" -TimeoutSec 5; if ($h2.ok) { break } } catch {}; Start-Sleep 2 }
-  $st2 = $null; try { $st2 = Invoke-RestMethod "http://127.0.0.1:$Port/status" -TimeoutSec 10 } catch {}
+  $st2 = $null; try { $st2 = Invoke-RestMethod "http://127.0.0.1:$Port/status" -Headers $tokHdr -TimeoutSec 10 } catch {}
   Check "healthy after restart" ($h2 -and $h2.ok) "$([int]($i*2))s, $($h2.documents) docs"
   if ($st2) {
     $same = $true; foreach ($role in @('device','bulk_device','query_device')) { if ($st.devices.roles.$role.resolved -ne $st2.devices.roles.$role.resolved) { $same = $false } }
     Check "devices resolve identically after restart" $same ("steady=" + $st2.devices.roles.device.resolved + " bulk=" + $st2.devices.roles.bulk_device.resolved + " query=" + $st2.devices.roles.query_device.resolved)
     Start-Sleep 20
-    $st3 = Invoke-RestMethod "http://127.0.0.1:$Port/status" -TimeoutSec 10
+    $st3 = Invoke-RestMethod "http://127.0.0.1:$Port/status" -Headers $tokHdr -TimeoutSec 10
     if ($st.indexer.queue.pending -gt 0 -or $st.indexer.full_build_in_progress) {
       Check "no re-embedding of unchanged content after restart" $true "skipped: initial build still in progress (queue $($st.indexer.queue.pending)); unchanged files are reported as skipped_unchanged=$($st3.indexer.counters.skipped_unchanged)"
     } else {

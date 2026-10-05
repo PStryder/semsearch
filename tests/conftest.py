@@ -56,6 +56,15 @@ def app(cfg):
     st.close()
 
 
+def grant_self(path):
+    """What `semsearch roots add` does as the folder owner: an explicit read grant for the
+    account the service runs as (in tests, the current user)."""
+    import getpass
+    import subprocess
+    r = subprocess.run(["icacls", str(path), "/grant", f"{getpass.getuser()}:(OI)(CI)RX", "/Q"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
 def drain(st, limit=10000):
     """Process every queued job in the foreground; return list of (op, path, result)."""
     out = []

@@ -77,17 +77,20 @@ def open_store_with_recovery(cfg: Config) -> tuple[Store, dict[str, Any]]:
     return store, info
 
 
-def load_or_create_admin_token(cfg: Config) -> str:
-    """A random token in <state_dir>/admin.token gates mutating API calls. The file's ACL is set
-    by the installer (service account + Administrators + the operator); the CLI reads it."""
+def load_or_create_admin_token(cfg: Config, rotate: bool = False) -> str:
+    """A random token in <state_dir>/admin.token gates the API. The file's ACL is set by the
+    installer (service account + Administrators + the operator); the CLI and tray read it.
+    The service rotates it at every start (rotate=True), so a token that ever leaked stops
+    working at the next restart; clients read the file for every request."""
     os.makedirs(cfg.state_path, exist_ok=True)
     p = cfg.state_path / "admin.token"
-    try:
-        tok = p.read_text(encoding="utf-8").strip()
-        if len(tok) >= 32:
-            return tok
-    except FileNotFoundError:
-        pass
+    if not rotate:
+        try:
+            tok = p.read_text(encoding="utf-8").strip()
+            if len(tok) >= 32:
+                return tok
+        except FileNotFoundError:
+            pass
     tok = secrets.token_hex(32)
     tmp = p.with_suffix(".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
@@ -97,7 +100,7 @@ def load_or_create_admin_token(cfg: Config) -> str:
 
 
 class AppState:
-    def __init__(self, cfg: Config, start_indexer: bool = True, isolate_extractors: bool = True):
+    def __init__(self, cfg: Config, start_indexer: bool = True, isolate_extractors: bool = True, rotate_token: bool = False):
         self.raw_cfg = cfg
         cfg, self.device_resolution = resolve_devices(cfg)
         self.cfg = cfg
@@ -108,7 +111,7 @@ class AppState:
                 json.dump(self.device_resolution, f, indent=1)
         except OSError as e:
             log.debug("could not persist device resolution: %s", e)
-        self.admin_token = load_or_create_admin_token(cfg)
+        self.admin_token = load_or_create_admin_token(cfg, rotate=rotate_token)
         # the configured cache is authoritative: an HF_HOME inherited from the environment must
         # not redirect the service to another profile's cache (huggingface_hub reads it at import)
         os.environ["HF_HOME"] = str(cfg.model_cache_dir)
@@ -154,7 +157,7 @@ class AppState:
             self.indexer.start()
 
     # ---- runtime scope changes (tray / API) ----
-    def apply_scope(self, roots: list[str] | None = None, excludes: list[str] | None = None) -> dict:
+    def apply_scope(self, roots: list[str] | None = None, excludes: list[str] | None = None) -> dict:  # noqa: C901
         """Change the indexed roots and/or the exclusion patterns: persist them into the
         configuration file (textual edit, comments kept) and apply them live. Paths must be
         absolute existing directories; the service account must already be able to read a
@@ -174,7 +177,18 @@ class AppState:
                     continue
                 seen.add(n)
                 new_roots.append(p)
-        new_excl = list(self.cfg.excludes) if excludes is None else [str(e) for e in excludes if str(e).strip()]
+        def _clean(v: str, what: str) -> str:
+            # control characters would let a value break out of its YAML line on the next save
+            if any(ord(ch) < 32 or ord(ch) == 127 for ch in v):
+                raise ValueError(f"{what} contains a control character: {v!r}")
+            return v
+        for r in new_roots:
+            _clean(r, "root")
+        # one spelling for patterns: forward slashes, which is what is persisted and what a
+        # pattern with a path in it must use to be matched as a path (a backslash pattern would
+        # silently act as a bare file-name pattern until the next restart)
+        new_excl = list(self.cfg.excludes) if excludes is None else \
+            [_clean(str(e).strip(), "exclusion").replace("\\", "/") for e in excludes if str(e).strip()]
         if self.cfg.source_path:
             from .config_edit import update_config_lists
             update_config_lists(self.cfg.source_path, roots=[p.replace("\\", "/") for p in new_roots] if roots is not None else None,

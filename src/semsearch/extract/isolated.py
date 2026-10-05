@@ -6,6 +6,7 @@ not the service. Plain-text extraction stays in-process (fast, no native code).
 """
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing as mp
 import threading
@@ -15,6 +16,32 @@ from ..config import Config
 from ..models import ExtractResult
 
 log = logging.getLogger(__name__)
+
+# The child parses hostile documents, so it is treated as untrusted: its replies cross the pipe
+# as JSON bytes (never pickle, which would let a compromised parser run code in the service),
+# with a size cap, and are validated field by field before use.
+_STATUSES = {"ok", "empty", "binary", "unsupported", "too_large", "error", "missing", "denied"}
+
+
+def _encode(obj) -> bytes:
+    return json.dumps(obj, ensure_ascii=False, default=str).encode("utf-8", "surrogatepass")
+
+
+def _decode(b: bytes):
+    return json.loads(b.decode("utf-8", "surrogatepass"))
+
+
+def _valid_reply(obj) -> ExtractResult | None:
+    if not (isinstance(obj, list) and len(obj) == 5):
+        return None
+    text, status, method, error, meta = obj
+    if not isinstance(text, str) or status not in _STATUSES or not isinstance(method, str):
+        return None
+    if error is not None and not isinstance(error, str):
+        return None
+    if not isinstance(meta, dict):
+        meta = {}
+    return ExtractResult(text, status, method[:64], (error or None) and error[:1000], meta)
 
 
 def _child_main(conn, cfg_json: str) -> None:  # pragma: no cover - runs in child
@@ -26,18 +53,18 @@ def _child_main(conn, cfg_json: str) -> None:  # pragma: no cover - runs in chil
     reg = build_default_registry(cfg)
     while True:
         try:
-            msg = conn.recv()
-        except (EOFError, OSError):
+            msg = _decode(conn.recv_bytes())
+        except (EOFError, OSError, ValueError):
             return
         if msg is None:
             return
         path, ext = msg
         try:
             r = reg.extract(path, ext)
-            conn.send((r.text, r.status, r.method, r.error, r.meta))
+            conn.send_bytes(_encode([r.text, r.status, r.method, r.error, r.meta]))
         except BaseException as e:  # noqa: BLE001
             try:
-                conn.send(("", "error", "isolated", f"{type(e).__name__}: {e}"[:500], {}))
+                conn.send_bytes(_encode(["", "error", "isolated", f"{type(e).__name__}: {e}"[:500], {}]))
             except Exception:
                 return
 
@@ -90,6 +117,7 @@ class IsolatedExtractor:
         from .text import TextExtractor
         self._inproc_exts = {ext for ext, chain in registry.chains.items() if chain and all(isinstance(e, TextExtractor) for e in chain)}
         self.restarts = 0
+        self._max_reply = 4 * int(cfg.indexing.max_text_chars) + (1 << 20)
 
     def _start(self) -> None:
         parent, child = self._ctx.Pipe()
@@ -136,7 +164,7 @@ class IsolatedExtractor:
         try:
             try:
                 if self._conn is not None:
-                    self._conn.send(None)
+                    self._conn.send_bytes(_encode(None))
             except Exception:
                 pass
             self._kill()
@@ -153,13 +181,24 @@ class IsolatedExtractor:
                     self.restarts += 1
                 self._start()
             try:
-                self._conn.send((path, ext))
+                self._conn.send_bytes(_encode([path, ext]))
                 if not self._conn.poll(self.timeout_s):
                     self._kill()
                     self.restarts += 1
                     return ExtractResult("", "error", "isolated", error=f"extraction timed out after {self.timeout_s:.0f}s; extractor process restarted")
-                text, status, method, error, meta = self._conn.recv()
-                return ExtractResult(text, status, method, error, meta or {})
+                # bounded read: text is capped at max_text_chars by the extractors (4 bytes/char worst case)
+                raw = self._conn.recv_bytes(self._max_reply)
+                res = _valid_reply(_decode(raw))
+                if res is None:
+                    self._kill()
+                    self.restarts += 1
+                    return ExtractResult("", "error", "isolated", error="extractor process sent a malformed reply; restarted")
+                res.text = res.text[: self.cfg.indexing.max_text_chars]
+                return res
+            except (ValueError, UnicodeDecodeError) as e:
+                self._kill()
+                self.restarts += 1
+                return ExtractResult("", "error", "isolated", error=f"extractor process sent an unreadable reply: {type(e).__name__}")
             except (EOFError, OSError, BrokenPipeError) as e:
                 self._kill()
                 self.restarts += 1

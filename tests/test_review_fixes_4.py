@@ -222,7 +222,8 @@ def test_unhandled_errors_do_not_leak_exception_text(built, monkeypatch):
     def boom(*a, **k):
         raise RuntimeError("secret path C:\\Users\\someone\\private.txt")
     monkeypatch.setattr(built.retriever, "search", boom)
-    with TestClient(create_app(built.cfg, state=built), base_url="http://127.0.0.1", raise_server_exceptions=False) as c:
+    with TestClient(create_app(built.cfg, state=built), base_url="http://127.0.0.1", raise_server_exceptions=False,
+                    headers={"x-semsearch-token": built.admin_token}) as c:
         r = c.get("/search?q=x")
         assert r.status_code == 500
         assert "private.txt" not in r.text and r.json()["error"] == "internal error" and len(r.json()["ref"]) == 8
@@ -232,7 +233,7 @@ def test_document_chunks_are_paged(built, root):
     write(str(root / "long.md"), "# Long\n\n" + "\n\n".join(f"paragraph {i} " + ("word " * 300) for i in range(12)) + "\n")
     built.indexer.index_path(str(root / "long.md"))
     drain(built)
-    with TestClient(create_app(built.cfg, state=built), base_url="http://127.0.0.1") as c:
+    with TestClient(create_app(built.cfg, state=built), base_url="http://127.0.0.1", headers={"x-semsearch-token": built.admin_token}) as c:
         d = c.get("/document", params={"path": str(root / "long.md"), "chunks": True, "limit": 2}).json()
         assert d["chunk_count"] > 2 and len(d["chunks"]) == 2 and d["chunks"][0]["ordinal"] == 0
         d2 = c.get("/document", params={"path": str(root / "long.md"), "chunks": True, "limit": 2, "offset": 2}).json()

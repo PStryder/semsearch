@@ -72,6 +72,19 @@ def list_block_values(text: str, key: str) -> list[str] | None:
     return [str(x) for x in v] if isinstance(v, list) else None
 
 
+def _copy_dacl(src: str, dst: str) -> None:
+    """Carry the existing file's explicit ACL (e.g. the operator's modify grant the installer
+    placed on semsearch.yaml) over to the replacement file."""
+    if not os.path.exists(src) or os.name != "nt":
+        return
+    try:
+        import win32security
+        sd = win32security.GetFileSecurity(src, win32security.DACL_SECURITY_INFORMATION)
+        win32security.SetFileSecurity(dst, win32security.DACL_SECURITY_INFORMATION, sd)
+    except Exception:  # noqa: BLE001 - best effort; the inherited ACL is the safe fallback
+        pass
+
+
 def write_atomic(path: str | os.PathLike, text: str) -> None:
     path = str(path)
     d = os.path.dirname(path) or "."
@@ -79,7 +92,16 @@ def write_atomic(path: str | os.PathLike, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
             f.write(text)
-        os.replace(tmp, path)
+        _copy_dacl(path, tmp)
+        for attempt in range(20):
+            try:
+                os.replace(tmp, path)
+                break
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                import time
+                time.sleep(0.05)
     except Exception:
         try:
             os.unlink(tmp)
@@ -89,12 +111,28 @@ def write_atomic(path: str | os.PathLike, text: str) -> None:
 
 
 def update_config_lists(path: str | os.PathLike, roots: list[str] | None = None, excludes: list[str] | None = None) -> str:
-    """Rewrite roots/excludes in the YAML file (whichever are given), atomically. Returns the new text."""
-    with open(path, "r", encoding="utf-8-sig") as f:  # -sig: PowerShell's Set-Content writes a BOM
+    """Rewrite roots/excludes in the YAML file (whichever are given), atomically. Returns the new
+    text. Refuses values with control characters, and refuses to write unless the new text parses
+    back to exactly the requested lists with every other top-level key unchanged."""
+    import yaml
+    for v in (roots or []) + (excludes or []):
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in v):
+            raise ValueError(f"control character in configuration value: {v!r}")
+    with open(path, "r", encoding="utf-8-sig", newline="") as f:  # -sig: BOM; newline="": keep CRLF as written
         text = f.read()
+    original = text
     if roots is not None:
         text = set_list_block(text, "roots", roots, "directories to index (edited by the SemSearch tray / API)")
     if excludes is not None:
         text = set_list_block(text, "excludes", excludes, "setting this REPLACES the default exclusion list")
+    before = yaml.safe_load(original) or {}
+    after = yaml.safe_load(text) or {}
+    want = dict(before)
+    if roots is not None:
+        want["roots"] = [r.replace("\\", "/") for r in roots]
+    if excludes is not None:
+        want["excludes"] = [e.replace("\\", "/") for e in excludes]
+    if after != want:
+        raise ValueError("refusing to write the configuration: the edited file would not parse back to the requested values")
     write_atomic(path, text)
     return text

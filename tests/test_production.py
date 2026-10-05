@@ -248,13 +248,14 @@ def test_service_runtime_starts_serves_and_stops_within_budget(cfg, root):
     assert steps and steps[0].startswith("opening store")
     h = httpx.get(f"http://127.0.0.1:{cfg.api.port}/health", timeout=5).json()
     assert h["ok"] and h["version"]
-    st = httpx.get(f"http://127.0.0.1:{cfg.api.port}/status", timeout=5).json()
+    H = {"x-semsearch-token": rt.state.admin_token}
+    st = httpx.get(f"http://127.0.0.1:{cfg.api.port}/status", timeout=5, headers=H).json()
     assert st["version"] and st["indexer"]["running"]
     # the full build runs in the background; queries work meanwhile
     deadline = time.time() + 20
-    while time.time() < deadline and httpx.get(f"http://127.0.0.1:{cfg.api.port}/stats", timeout=5).json()["documents"] < 6:
+    while time.time() < deadline and httpx.get(f"http://127.0.0.1:{cfg.api.port}/stats", timeout=5, headers=H).json()["documents"] < 6:
         time.sleep(0.2)
-    r = httpx.post(f"http://127.0.0.1:{cfg.api.port}/search", json={"query": "GPU memory", "mode": "hybrid", "limit": 1}, timeout=10).json()
+    r = httpx.post(f"http://127.0.0.1:{cfg.api.port}/search", json={"query": "GPU memory", "mode": "hybrid", "limit": 1}, timeout=10, headers=H).json()
     assert r["results"][0]["filename"] == "gpu.txt"
     t1 = time.time()
     rt.stop()

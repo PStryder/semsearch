@@ -705,10 +705,15 @@ class Store:
                                  ["%" + self._like_escape(needle) + "%", *params, int(limit)]).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
-    def filename_glob(self, pattern: str, limit: int = 200) -> list[tuple[int, str]]:
-        rows = self._r().execute("SELECT id, filename FROM documents WHERE filename GLOB ? LIMIT ?", (pattern, int(limit))).fetchall()
+    def filename_glob(self, pattern: str, limit: int = 200, roots: Sequence[str] | None = None,
+                      extensions: Sequence[str] | None = None) -> list[tuple[int, str]]:
+        """Filename glob, with root/extension filters applied in the query (so the LIMIT counts
+        only documents inside the filter) and live documents only."""
+        flt, params = self._doc_filter_sql(roots, extensions)
+        q = f"SELECT d.id, d.filename FROM documents d WHERE {{col}} GLOB ? AND d.extract_status != 'missing'{flt} LIMIT ?"
+        rows = self._r().execute(q.format(col="d.filename"), [pattern, *params, int(limit)]).fetchall()
         if not rows and pattern != pattern.lower():
-            rows = self._r().execute("SELECT id, filename FROM documents WHERE lower(filename) GLOB ? LIMIT ?", (pattern.lower(), int(limit))).fetchall()
+            rows = self._r().execute(q.format(col="lower(d.filename)"), [pattern.lower(), *params, int(limit)]).fetchall()
         return [(int(r[0]), r[1]) for r in rows]
 
     # ---- job queue ----

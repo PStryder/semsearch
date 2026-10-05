@@ -36,7 +36,7 @@ from .embed.base import EmbeddingProvider
 from .extract.registry import ExtractorRegistry, clean_text
 from .models import FileEntry
 from .security import (PathRejected, check_indexable, compile_excludes, display_path, file_extension, is_excluded, is_within,
-                       lstat_info, normalize_path, reparse_roots, root_for, suspected_secret, true_case_path)
+                       lstat_info, normalize_path, reparse_roots, resolves_inside, root_for, suspected_secret, true_case_path)
 from .store.db import Store, file_hash, text_hash
 
 log = logging.getLogger(__name__)
@@ -970,7 +970,17 @@ class Indexer:
             return "missing"
         except OSError:
             after = None
-        if after is None or after.is_reparse or (str(after.file_id), after.size) != (str(info.file_id), info.size) or abs(after.mtime - info.mtime) >= 1e-6:
+        follow = self.cfg.indexing.follow_reparse_points
+        swapped = after is None or after.is_reparse or (str(after.file_id), after.size) != (str(info.file_id), info.size) \
+            or abs(after.mtime - info.mtime) >= 1e-6
+        # defence in depth: the resolved path must still be the path that was checked. (A swap
+        # that changes what the path reaches also changes the file identity above; this catches a
+        # chain that resolves elsewhere while reaching the same file, e.g. a hard-linked twin.)
+        if not swapped and not resolves_inside(disp, self.roots, follow):
+            log.warning("path resolves outside the configured roots after extraction (reparse point in the chain?): %s", disp)
+            self.store.record_error(disp, "policy", "resolves outside the roots after extraction; not recorded")
+            return "rejected"
+        if swapped:
             log.info("file changed while it was being indexed, re-queued: %s", disp)
             self.store.enqueue(path_norm, "index", PRIO_USER)
             return "changed_during_index"

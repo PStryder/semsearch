@@ -64,7 +64,7 @@ class ServiceRuntime:
         if cfg.indexing.low_priority:
             self._lower_priority()
         self.progress("opening store and loading embedding model")
-        self.state = AppState(cfg, start_indexer=False, isolate_extractors=True)
+        self.state = AppState(cfg, start_indexer=False, isolate_extractors=True, rotate_token=True)
         self.admin_token = self.state.admin_token
         self.progress("starting API")
         self._start_api()
